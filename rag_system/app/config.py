@@ -43,6 +43,24 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 6  # More context for better answers
     llm_temperature: float = 0.3  # Lower for more focused responses
     
+    # Hybrid Search Configuration
+    enable_hybrid_search: bool = True  # Combine vector + BM25 keyword search
+    bm25_weight: float = 0.3  # 30% BM25, 70% vector similarity
+    hybrid_top_k: int = 20  # Retrieve more before reranking
+    
+    # Reranking Configuration
+    enable_reranking: bool = True  # Use reranker model to refine results
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"  # Fast & accurate
+    reranker_top_k: int = 6  # Final number after reranking
+    
+    # Enhanced Chunking Configuration
+    use_semantic_chunking: bool = True  # Split by semantic meaning
+    enable_sliding_window: bool = True  # Add overlapping context
+    
+    # Conversation History
+    enable_conversation_history: bool = True
+    max_history_messages: int = 10  # Keep last 10 messages per session
+    
     # JWT Authentication Settings
     jwt_secret_key: str = "your-secret-key-change-this-in-production-use-openssl-rand-hex-32"
     jwt_algorithm: str = "HS256"

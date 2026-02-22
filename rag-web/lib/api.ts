@@ -16,11 +16,44 @@ export interface QueryResponse {
     question: string;
     answer: string;
     sources: Array<{
+        source_id: number;
+        document_id: string;
         document: string;
         chunk: number;
+        total_chunks: number;
+        position_percent: number;
         content: string;
         relevance_score: number;
+        chunk_length: number;
     }>;
+    answer_type?: string;
+    retrieval_metadata?: {
+        total_sources: number;
+        hybrid_search_used: boolean;
+        reranking_used: boolean;
+        filters_applied: boolean;
+    };
+}
+
+export interface QueryRequest {
+    question: string;
+    top_k?: number;
+    answer_type?: 'default' | 'summary' | 'detailed' | 'bullet_points' | 'compare' | 'explain_simple';
+    filters?: Record<string, string>;
+    session_id?: string;
+}
+
+export interface ConversationSession {
+    session_id: string;
+    created_at: string;
+}
+
+export interface FeedbackRequest {
+    session_id?: string;
+    question: string;
+    answer: string;
+    rating: number;
+    feedback_text?: string;
 }
 
 export interface UploadResponse {
@@ -150,11 +183,22 @@ export const api = {
         return response.json();
     },
 
-    async queryDocuments(question: string, topK: number = 6): Promise<QueryResponse> {
+    async queryDocuments(queryRequest: QueryRequest | string, topK?: number): Promise<QueryResponse> {
+        // Support both old and new API
+        const body = typeof queryRequest === 'string' 
+            ? { question: queryRequest, top_k: topK || 6 }
+            : {
+                question: queryRequest.question,
+                top_k: queryRequest.top_k || 6,
+                answer_type: queryRequest.answer_type || 'default',
+                filters: queryRequest.filters,
+                session_id: queryRequest.session_id
+            };
+
         const response = await fetch(`${API_BASE_URL}/query`, {
             method: 'POST',
             headers: getAuthHeaders(),
-            body: JSON.stringify({ question, top_k: topK }),
+            body: JSON.stringify(body),
         });
 
         if (!response.ok) {
@@ -236,6 +280,56 @@ export const api = {
     }): Promise<User> {
         const response = await fetch(`${API_BASE_URL}/api/auth/register`, {
             method: 'POST',
+
+    // Conversation management endpoints
+    async createConversationSession(): Promise<ConversationSession> {
+        const response = await fetch(`${API_BASE_URL}/conversation/create`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({}),
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to create conversation session');
+        }
+
+        return response.json();
+    },
+
+    async getConversationHistory(sessionId: string) {
+        const response = await fetch(`${API_BASE_URL}/conversation/${sessionId}`, {
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to fetch conversation history');
+        }
+
+        return response.json();
+    },
+
+    async clearConversationSession(sessionId: string): Promise<void> {
+        const response = await fetch(`${API_BASE_URL}/conversation/${sessionId}`, {
+            method: 'DELETE',
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to clear conversation session');
+        }
+    },
+
+    async submitFeedback(feedback: FeedbackRequest): Promise<void> {
+        const response = await fetch(`${API_BASE_URL}/feedback`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify(feedback),
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to submit feedback');
+        }
+    },
             headers: getAuthHeaders(),
             body: JSON.stringify(userData),
         });

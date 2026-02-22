@@ -20,7 +20,12 @@ from app.models import (
     QueryRequest,
     QueryResponse,
     DocumentInfo,
-    HealthResponse
+    HealthResponse,
+    ConversationSessionCreate,
+    ConversationSessionResponse,
+    ConversationHistoryResponse,
+    FeedbackRequest,
+    AnswerType
 )
 from app.auth_models import UserCreate, UserLogin, UserResponse, Token, UserRole
 from app.auth_utils import (
@@ -38,6 +43,7 @@ from app.services.user_service import (
 from app.services.document_processor import document_processor
 from app.services.vector_store import vector_store
 from app.services.rag_chain import rag_chain
+from app.services.conversation_history import conversation_history
 
 # Initialize user database on startup
 init_user_database()
@@ -295,18 +301,40 @@ async def query_documents(
     current_user = Depends(get_current_user)
 ):
     """
-    Ask a question about the uploaded documents.
+    Ask a question about the uploaded documents with advanced features.
     
     **🔓 Requires authentication - All authenticated users can query.**
     
+    **Parameters:**
     - **question**: Your question about the documents
-    - **top_k**: Number of relevant chunks to retrieve (1-10, default: 6 for better context)
+    - **top_k**: Number of relevant chunks to retrieve (1-20, default: 6)
+    - **answer_type**: Type of answer to generate:
+      - `default`: Standard Q&A
+      - `summary`: Concise summary
+      - `detailed`: In-depth explanation
+      - `bullet_points`: Key points extracted
+      - `compare`: Comparative analysis
+      - `explain_simple`: Simple language explanation
+    - **filters**: Optional metadata filters (e.g., `{"document_id": "doc_abc123"}`)
+    - **session_id**: Conversation session ID for follow-up questions (get from `/conversation/create`)
     
-    Returns a detailed answer based on the document content with source citations.
-    Uses enhanced prompting for higher quality, more comprehensive responses.
+    **Enhanced Features:**
+    - 🔍 **Hybrid Search**: Combines vector similarity and keyword matching (BM25)
+    - 🎯 **Reranking**: Uses cross-encoder model for better relevance
+    - 📚 **Source Citations**: Detailed source information with relevance scores
+    - 💬 **Conversation History**: Maintains context for follow-up questions
+    - 🎨 **Multiple Answer Types**: Different formats for different needs
+    
+    Returns a detailed answer with enhanced source citations and retrieval metadata.
     """
     try:
-        result = rag_chain.query(request_data.question, top_k=request_data.top_k)
+        result = rag_chain.query(
+            question=request_data.question,
+            top_k=request_data.top_k,
+            answer_type=request_data.answer_type.value if hasattr(request_data.answer_type, 'value') else request_data.answer_type,
+            filters=request_data.filters,
+            session_id=request_data.session_id
+        )
         return QueryResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
@@ -383,6 +411,115 @@ async def get_stats():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting stats: {str(e)}")
+
+
+# ============================================================================
+# Conversation Management Endpoints
+# ============================================================================
+
+@app.post("/conversation/create", response_model=ConversationSessionResponse, tags=["Conversation"])
+async def create_conversation_session(
+    data: ConversationSessionCreate,
+    current_user = Depends(get_current_user)
+):
+    """
+    Create a new conversation session for context-aware follow-up questions.
+    
+    **🔓 Requires authentication**
+    
+    Returns a session ID that can be used in `/query` requests to maintain conversation context.
+    The system will remember the last 10 messages to provide coherent follow-up answers.
+    
+    **Example workflow:**
+    1. Create a session: `POST /conversation/create`
+    2. Ask questions with the session_id: `POST /query` with `"session_id": "<your_session_id>"`
+    3. The system maintains context for intelligent follow-ups
+    """
+    session_id = conversation_history.create_session(user_id=current_user.username)
+    from datetime import datetime
+    return ConversationSessionResponse(
+        session_id=session_id,
+        created_at=datetime.now().isoformat()
+    )
+
+
+@app.get("/conversation/{session_id}", response_model=ConversationHistoryResponse, tags=["Conversation"])
+async def get_conversation_history(
+    session_id: str,
+    current_user = Depends(get_current_user)
+):
+    """
+    Get conversation history for a session.
+    
+    **🔓 Requires authentication**
+    
+    Returns all messages in the conversation session.
+    """
+    messages = conversation_history.get_history(session_id)
+    return ConversationHistoryResponse(
+        session_id=session_id,
+        messages=messages
+    )
+
+
+@app.delete("/conversation/{session_id}", tags=["Conversation"])
+async def clear_conversation_session(
+    session_id: str,
+    current_user = Depends(get_current_user)
+):
+    """
+    Clear a conversation session.
+    
+    **🔓 Requires authentication**
+    
+    Deletes all history for the specified session.
+    """
+    conversation_history.clear_session(session_id)
+    return {
+        "success": True,
+        "message": "Conversation session cleared",
+        "session_id": session_id
+    }
+
+
+@app.get("/conversation", tags=["Conversation"])
+async def list_conversations(
+    current_user = Depends(get_current_user)
+):
+    """
+    List all active conversation sessions for the current user.
+    
+    **🔓 Requires authentication**
+    """
+    sessions = conversation_history.get_all_sessions(user_id=current_user.username)
+    return {
+        "sessions": sessions,
+        "total": len(sessions)
+    }
+
+
+@app.post("/feedback", tags=["Feedback"])
+async def submit_feedback(
+    feedback: FeedbackRequest,
+    current_user = Depends(get_current_user)
+):
+    """
+    Submit feedback on a query response.
+    
+    **🔓 Requires authentication**
+    
+    Helps improve the system by collecting user ratings and feedback.
+    
+    - **rating**: 1 (poor) to 5 (excellent)
+    - **feedback_text**: Optional detailed feedback
+    """
+    # In a production system, you would store this in a database
+    # For now, we'll just acknowledge receipt
+    return {
+        "success": True,
+        "message": "Thank you for your feedback!",
+        "rating": feedback.rating
+    }
 
 
 if __name__ == "__main__":

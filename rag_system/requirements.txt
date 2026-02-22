@@ -2,17 +2,20 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 python-multipart==0.0.22
+slowapi==0.1.9
 
 # LangChain & AI
 langchain>=0.1.0
 langchain-openai>=0.0.5
 langchain-community>=0.0.10
 langchain-ollama>=0.1.1
+langchain-experimental>=0.0.50
 tiktoken==0.5.2
 sentence-transformers==3.0.1
 
-# Vector Database
+# Vector Database & Search
 chromadb==0.4.22
+rank-bm25==0.2.2
 
 # Document Processing
 pypdf2==3.0.1
@@ -27,3 +30,4 @@ passlib[bcrypt]==1.7.4
 
 # Additional Dependencies
 requests==2.31.0
+numpy>=1.24.0

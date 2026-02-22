@@ -1,6 +1,6 @@
 """
 Document processing service for PDFs and text files.
-Handles text extraction and chunking for RAG system.
+Handles text extraction and advanced chunking for RAG system.
 """
 import os
 import uuid
@@ -8,19 +8,52 @@ from pathlib import Path
 from typing import List, Tuple
 from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_experimental.text_splitter import SemanticChunker
 from app.config import settings
 
 
 class DocumentProcessor:
-    """Process documents (PDF, TXT) and split into chunks."""
+    """Process documents (PDF, TXT) and split into chunks with advanced strategies."""
     
     def __init__(self):
+        # Standard recursive splitter
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
             length_function=len,
-            separators=["\n\n", "\n", " ", ""]
+            separators=["\n\n", "\n", ". ", " ", ""]
         )
+        
+        # Semantic splitter (initialized when needed)
+        self._semantic_splitter = None
+    
+    def get_semantic_splitter(self):
+        """Lazy load semantic splitter with embeddings."""
+        if self._semantic_splitter is None and settings.use_semantic_chunking:
+            try:
+                if settings.llm_provider == "openai":
+                    from langchain_openai import OpenAIEmbeddings
+                    embeddings = OpenAIEmbeddings(
+                        openai_api_key=settings.openai_api_key,
+                        model=settings.openai_embedding_model
+                    )
+                else:
+                    from langchain_community.embeddings import HuggingFaceEmbeddings
+                    embeddings = HuggingFaceEmbeddings(
+                        model_name="all-MiniLM-L6-v2",
+                        model_kwargs={'device': 'cpu'},
+                        encode_kwargs={'normalize_embeddings': True}
+                    )
+                
+                self._semantic_splitter = SemanticChunker(
+                    embeddings,
+                    breakpoint_threshold_type="percentile"
+                )
+            except Exception as e:
+                print(f"Warning: Could not initialize semantic chunker: {e}")
+                print("Falling back to recursive chunking")
+        
+        return self._semantic_splitter
     
     def extract_text_from_pdf(self, file_path: str) -> Tuple[str, int]:
         """
@@ -68,7 +101,7 @@ class DocumentProcessor:
     
     def process_document(self, file_path: str, filename: str) -> Tuple[List[dict], str, int]:
         """
-        Process document and split into chunks.
+        Process document and split into chunks with advanced strategies.
         
         Args:
             file_path: Path to document file
@@ -96,12 +129,15 @@ class DocumentProcessor:
         if not text.strip():
             raise ValueError("No text could be extracted from the document")
         
-        # Split text into chunks
-        chunks = self.text_splitter.split_text(text)
+        # Choose chunking strategy
+        chunks = self._split_text_intelligently(text)
         
         # Add metadata to each chunk
         chunks_with_metadata = []
         for i, chunk in enumerate(chunks):
+            # Calculate position percentage
+            position_percent = (i / len(chunks)) * 100 if chunks else 0
+            
             chunks_with_metadata.append({
                 "text": chunk,
                 "metadata": {
@@ -109,11 +145,87 @@ class DocumentProcessor:
                     "filename": filename,
                     "chunk_index": i,
                     "total_chunks": len(chunks),
-                    "pages": num_pages
+                    "pages": num_pages,
+                    "position_percent": round(position_percent, 2),
+                    "chunk_length": len(chunk)
                 }
             })
         
         return chunks_with_metadata, doc_id, num_pages
+    
+    def _split_text_intelligently(self, text: str) -> List[str]:
+        """
+        Split text using the best available strategy.
+        
+        Args:
+            text: Text to split
+            
+        Returns:
+            List of text chunks
+        """
+        # Try semantic chunking first if enabled
+        if settings.use_semantic_chunking:
+            semantic_splitter = self.get_semantic_splitter()
+            if semantic_splitter:
+                try:
+                    chunks = semantic_splitter.split_text(text)
+                    # If chunks are too large, re-split them
+                    final_chunks = []
+                    for chunk in chunks:
+                        if len(chunk) > settings.chunk_size * 1.5:
+                            # Re-split large chunks
+                            sub_chunks = self.text_splitter.split_text(chunk)
+                            final_chunks.extend(sub_chunks)
+                        else:
+                            final_chunks.append(chunk)
+                    return final_chunks
+                except Exception as e:
+                    print(f"Semantic chunking failed: {e}, using recursive splitter")
+        
+        # Fall back to recursive character text splitter
+        chunks = self.text_splitter.split_text(text)
+        
+        # Add sliding window context if enabled
+        if settings.enable_sliding_window and len(chunks) > 1:
+            chunks = self._add_sliding_window_context(chunks)
+        
+        return chunks
+    
+    def _add_sliding_window_context(self, chunks: List[str]) -> List[str]:
+        """
+        Add context from adjacent chunks using sliding windows.
+        
+        Args:
+            chunks: Original chunks
+            
+        Returns:
+            Chunks with added context
+        """
+        if len(chunks) <= 1:
+            return chunks
+        
+        enhanced_chunks = []
+        overlap_size = settings.chunk_overlap
+        
+        for i, chunk in enumerate(chunks):
+            # Add context from previous chunk
+            prefix = ""
+            if i > 0:
+                prev_chunk = chunks[i-1]
+                # Take last N characters from previous chunk
+                prefix = f"[...previous context: {prev_chunk[-overlap_size:]}]\n\n"
+            
+            # Add context from next chunk
+            suffix = ""
+            if i < len(chunks) - 1:
+                next_chunk = chunks[i+1]
+                # Take first N characters from next chunk
+                suffix = f"\n\n[...continued: {next_chunk[:overlap_size]}]"
+            
+            enhanced_chunk = f"{prefix}{chunk}{suffix}"
+            enhanced_chunks.append(enhanced_chunk)
+        
+        return enhanced_chunks
     
     def save_uploaded_file(self, file_content: bytes, filename: str) -> str:
         """
