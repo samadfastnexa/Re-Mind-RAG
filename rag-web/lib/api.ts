@@ -214,4 +214,37 @@ export const api = {
 
         return response.json();
     },
+
+    // Admin endpoints
+    async getAllUsers(): Promise<User[]> {
+        const response = await fetch(`${API_BASE_URL}/api/auth/users`, {
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to fetch users');
+        }
+
+        return response.json();
+    },
+
+    async createUser(userData: {
+        username: string;
+        email: string;
+        password: string;
+        role: 'user' | 'admin';
+    }): Promise<User> {
+        const response = await fetch(`${API_BASE_URL}/api/auth/register`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify(userData),
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Failed to create user');
+        }
+
+        return response.json();
+    },
 };

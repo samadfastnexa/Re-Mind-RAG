@@ -39,6 +39,10 @@ export default function Home() {
     router.push('/login');
   };
 
+  const navigateToAdmin = () => {
+    router.push('/admin');
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -64,6 +68,14 @@ export default function Home() {
             </p>
           </div>
           <div className="flex items-center gap-4">
+            {isAdmin && (
+              <button
+                onClick={navigateToAdmin}
+                className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition"
+              >
+                👑 Admin Panel
+              </button>
+            )}
             <div className="text-right">
               <p className="text-sm font-medium text-gray-900">{user?.username}</p>
               <p className="text-xs text-gray-500">
