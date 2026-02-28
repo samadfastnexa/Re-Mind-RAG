@@ -1,6 +1,8 @@
 import { StyleSheet, View, Text, TextInput, TouchableOpacity, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { useLocalSearchParams } from 'expo-router';
 import { ragApi, type QueryResponse } from '../services/api';
+import { conversationStorage, type ConversationRecord, type StoredMessage } from '../services/conversationStorage';
 
 interface Message {
     id: string;
@@ -11,14 +13,72 @@ interface Message {
 }
 
 export default function ChatScreen() {
+    const { conversationId } = useLocalSearchParams<{ conversationId?: string }>();
+
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
+    const [currentConvId, setCurrentConvId] = useState<string>(
+        conversationId || Date.now().toString()
+    );
     const scrollViewRef = useRef<ScrollView>(null);
 
     useEffect(() => {
         scrollViewRef.current?.scrollToEnd({ animated: true });
     }, [messages]);
+
+    // Load existing conversation if navigated from history
+    useEffect(() => {
+        if (conversationId) {
+            (async () => {
+                const all = await conversationStorage.getAll();
+                const found = all.find(c => c.id === conversationId);
+                if (found) {
+                    setCurrentConvId(found.id);
+                    setMessages(
+                        found.messages.map(m => ({
+                            ...m,
+                            timestamp: new Date(m.timestamp),
+                        }))
+                    );
+                }
+            })();
+        }
+    }, [conversationId]);
+
+    // Save conversation after each message exchange
+    const saveToHistory = useCallback(async (msgs: Message[]) => {
+        if (msgs.length === 0) return;
+
+        const title = msgs.find(m => m.type === 'user')?.content.slice(0, 60) || 'New Conversation';
+        const storedMessages: StoredMessage[] = msgs.map(m => ({
+            id: m.id,
+            type: m.type,
+            content: m.content,
+            sources: m.sources?.map(s => ({
+                source_id: s.source_id,
+                document_id: s.document_id,
+                document: s.document,
+                chunk: s.chunk,
+                total_chunks: s.total_chunks,
+                position_percent: s.position_percent,
+                content: s.content,
+                relevance_score: s.relevance_score,
+                chunk_length: s.chunk_length,
+            })),
+            timestamp: m.timestamp.toISOString(),
+        }));
+
+        const record: ConversationRecord = {
+            id: currentConvId,
+            title,
+            messages: storedMessages,
+            createdAt: msgs[0].timestamp.toISOString(),
+            lastUpdated: new Date().toISOString(),
+        };
+
+        await conversationStorage.upsert(record);
+    }, [currentConvId]);
 
     const handleSend = async () => {
         if (!input.trim() || loading) return;
@@ -30,7 +90,8 @@ export default function ChatScreen() {
             timestamp: new Date(),
         };
 
-        setMessages((prev) => [...prev, userMessage]);
+        const updatedWithUser = [...messages, userMessage];
+        setMessages(updatedWithUser);
         setInput('');
         setLoading(true);
 
@@ -45,7 +106,9 @@ export default function ChatScreen() {
                 timestamp: new Date(),
             };
 
-            setMessages((prev) => [...prev, assistantMessage]);
+            const updatedWithAssistant = [...updatedWithUser, assistantMessage];
+            setMessages(updatedWithAssistant);
+            await saveToHistory(updatedWithAssistant);
         } catch (error) {
             const errorMessage: Message = {
                 id: (Date.now() + 1).toString(),
@@ -54,7 +117,9 @@ export default function ChatScreen() {
                 timestamp: new Date(),
             };
 
-            setMessages((prev) => [...prev, errorMessage]);
+            const updatedWithError = [...updatedWithUser, errorMessage];
+            setMessages(updatedWithError);
+            await saveToHistory(updatedWithError);
         } finally {
             setLoading(false);
         }

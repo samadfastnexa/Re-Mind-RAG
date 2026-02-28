@@ -1,6 +1,6 @@
 """
 RAG chain implementation using LangChain with OpenAI or Ollama.
-Enhanced with hybrid search, reranking, and multiple answer types.
+Enhanced with hybrid search, reranking, query caching, and multiple answer types.
 """
 from typing import Dict, List, Optional
 from langchain_core.prompts import ChatPromptTemplate
@@ -10,6 +10,7 @@ from app.config import settings
 from app.services.vector_store import vector_store
 from app.services.reranker import get_reranker
 from app.services.conversation_history import conversation_history
+from app.services.query_cache import query_cache
 
 
 class RAGChain:
@@ -29,10 +30,11 @@ class RAGChain:
             self.llm = ChatOllama(
                 base_url=settings.ollama_base_url,
                 model=settings.ollama_model,
-                temperature=0.1,  # Very low for maximum accuracy
-                num_predict=512,  # Longer responses
-                top_k=10,  # More focused selection
-                top_p=0.85  # Slightly lower for better quality
+                temperature=0.15,  # Very low for maximum accuracy
+                num_predict=1024,  # Longer, more complete responses
+                top_k=15,  # Balanced selection
+                top_p=0.9,  # Good diversity while staying focused
+                repeat_penalty=1.15  # Reduce repetitive text
             )
         
         # Initialize reranker if enabled
@@ -51,23 +53,30 @@ class RAGChain:
     def _create_default_prompt(self) -> ChatPromptTemplate:
         """Standard Q&A prompt."""
         return ChatPromptTemplate.from_messages([
-            ("system", """You are a precise and knowledgeable AI assistant. Your task is to answer questions using ONLY the information provided in the context below.
+            ("system", """You are a precise, knowledgeable AI assistant. Answer questions using ONLY the provided context.
 
-CRITICAL RULES:
-1. Answer ONLY based on the context provided - never make assumptions or add external knowledge
-2. If the context contains the answer, provide a clear, detailed, and well-structured response
-3. If the context does NOT contain the answer, simply say: "I cannot answer this question based on the provided documents."
-4. NEVER contradict yourself - if you don't know, say so; if you do know, provide the answer
-5. Always cite which document and section your information comes from
-6. Be specific, accurate, and factual
-7. Use clear formatting with bullet points or paragraphs as appropriate
+RULES:
+1. Answer ONLY from the context — no external knowledge or assumptions
+2. If the answer IS in the context, give a clear, complete, well-structured response
+3. If the answer is NOT in the context, say: "I cannot answer this question based on the provided documents."
+4. Interpret the user's intent even if there are typos or unclear phrasing
+5. Be thorough — include all relevant details from the context
+6. Never contradict the source material
+
+FORMATTING:
+- **Bold** key terms and important concepts
+- Use bullet points or numbered lists for multiple items/steps
+- Use ### headings for longer answers with multiple topics
+- Use `code formatting` for file names, commands, technical terms
+- Use > blockquotes for direct quotes from documents
+- Keep short answers concise; expand only when the context is rich
 
 {conversation_context}
 
 CONTEXT FROM DOCUMENTS:
 {context}
 
-Based ONLY on the context above, provide an accurate answer to the question below."""),
+Answer the question below accurately and completely using ONLY the context above."""),
             ("human", "{question}")
         ])
     
@@ -79,11 +88,20 @@ Based ONLY on the context above, provide an accurate answer to the question belo
 Your task is to summarize the key information from the provided context that is relevant to the user's question.
 
 GUIDELINES:
-1. Focus on the most important points
-2. Be concise but comprehensive
-3. Use bullet points for clarity
-4. Maintain factual accuracy
-5. Only use information from the context
+1. Start with a one-sentence **TL;DR** in bold
+2. Follow with 3-7 bullet points covering the key information
+3. Use **bold** for the main idea of each bullet point
+4. End with a brief conclusion sentence if appropriate
+5. Maintain factual accuracy — only use information from the context
+6. Reference [Source N] for each point where applicable
+
+FORMAT EXAMPLE:
+**TL;DR: [one-sentence summary]**
+
+• **Key Point 1** — explanation [Source 1]
+• **Key Point 2** — explanation [Source 2]
+
+{conversation_context}
 
 CONTEXT:
 {context}"""),
@@ -99,11 +117,21 @@ Your task is to provide a thorough, detailed answer using ALL relevant informati
 
 GUIDELINES:
 1. Include all relevant details and nuances
-2. Explain concepts thoroughly
+2. Explain concepts thoroughly with clear language
 3. Provide examples when available
-4. Use structured formatting (headings, bullet points)
-5. Cite specific sources for each point
-6. Only use information from the context
+4. Only use information from the context
+
+FORMATTING RULES:
+- Start with a brief **overview** paragraph
+- Use ### headings to organize into sections
+- Use **bold** for key terms and important concepts
+- Use numbered lists for sequential steps or processes
+- Use bullet points for non-sequential items
+- Use > blockquotes for direct references from documents
+- Add [Source N] citations inline
+- End with a **Key Takeaways** section using bullet points
+
+{conversation_context}
 
 CONTEXT:
 {context}"""),
@@ -118,11 +146,18 @@ CONTEXT:
 Your task is to extract the most important points from the context and present them as clear, concise bullet points.
 
 GUIDELINES:
-1. Use bullet points for each key piece of information
-2. Be concise and specific
-3. Group related information together
-4. Maintain factual accuracy
-5. Only use information from the context
+1. Be concise and specific — one idea per bullet
+2. Group related information under ### sub-headings when there are many points
+3. Use **bold** for the key term or concept at the start of each bullet
+4. Maintain factual accuracy — only use information from the context
+5. Add [Source N] at the end of each bullet
+
+FORMAT EXAMPLE:
+### Category Name
+• **Key Term** — concise explanation [Source 1]
+• **Another Term** — concise explanation [Source 2]
+
+{conversation_context}
 
 CONTEXT:
 {context}"""),
@@ -137,11 +172,21 @@ CONTEXT:
 Your task is to compare and contrast the items mentioned in the question using information from the context.
 
 GUIDELINES:
-1. Create a clear comparison structure
-2. Highlight similarities and differences
-3. Use tables or bullet points for clarity
-4. Be objective and factual
-5. Only use information from the context
+1. Be objective and factual — only use information from the context
+2. Highlight both similarities and differences clearly
+
+FORMATTING RULES:
+- Start with a brief overview of what is being compared
+- Use a markdown table when comparing features/attributes:
+  | Feature | Item A | Item B |
+  |---------|--------|--------|
+  | ...     | ...    | ...    |
+- After the table, add ### Similarities and ### Differences sections with bullet points
+- Use **bold** for key differentiators
+- Add [Source N] citations
+- End with a brief **Conclusion** paragraph
+
+{conversation_context}
 
 CONTEXT:
 {context}"""),
@@ -151,16 +196,25 @@ CONTEXT:
     def _create_simple_explanation_prompt(self) -> ChatPromptTemplate:
         """Simple explanation prompt."""
         return ChatPromptTemplate.from_messages([
-            ("system", """You are an expert at explaining complex topics in simple, easy-to-understand language.
+            ("system", """You are an expert at explaining complex topics in simple, easy-to-understand language — like explaining to a curious friend.
 
-Your task is to explain the topic in the question using simple words and clear examples.
+Your task is to explain the topic using simple words and clear examples.
 
 GUIDELINES:
-1. Use simple, everyday language
-2. Avoid technical jargon when possible
-3. Use analogies and examples
-4. Break down complex concepts
-5. Only use information from the context
+1. Use simple, everyday language — avoid jargon
+2. Use analogies and real-world examples
+3. Break down complex concepts step by step
+4. Only use information from the context
+
+FORMATTING RULES:
+- Start with a one-sentence **simple answer** in bold
+- Then explain "why" or "how" in 2-3 short paragraphs
+- Use **bold** for important terms, followed by a simple definition in parentheses
+- Use analogies formatted as: 💡 *Think of it like...*
+- Use numbered steps if explaining a process
+- Keep sentences short — max 20 words each when possible
+
+{conversation_context}
 
 CONTEXT:
 {context}"""),
@@ -170,6 +224,7 @@ CONTEXT:
     def format_context(self, search_results: List[Dict]) -> str:
         """
         Format search results into context string with enhanced source information.
+        Cleans and deduplicates content.
         
         Args:
             search_results: List of search results from vector store
@@ -178,9 +233,22 @@ CONTEXT:
             Formatted context string
         """
         context_parts = []
+        seen_content = set()
+        
         for i, result in enumerate(search_results, 1):
             metadata = result.get('metadata', {})
             content = result.get('content', '')
+            
+            # Clean content - remove page markers and normalize whitespace
+            content = content.replace('--- Page', '').strip()
+            content = ' '.join(content.split())
+            
+            # Skip duplicate content
+            content_key = content[:150].lower()
+            if content_key in seen_content:
+                continue
+            seen_content.add(content_key)
+            
             filename = metadata.get('filename', 'Unknown')
             chunk_index = metadata.get('chunk_index', 0)
             position = metadata.get('position_percent', 0)
@@ -193,7 +261,7 @@ CONTEXT:
                 score_info = f" [Hybrid Score: {result['hybrid_score']:.2f}]"
             
             context_parts.append(
-                f"[Source {i}: {filename}, Section {chunk_index + 1} ({position:.0f}% through document){score_info}]\n{content}\n"
+                f"[Source {len(context_parts) + 1}: {filename}, Section {chunk_index + 1} ({position:.0f}% through document){score_info}]\n{content}\n"
             )
         
         return "\n---\n".join(context_parts)
@@ -201,6 +269,7 @@ CONTEXT:
     def format_sources(self, search_results: List[Dict]) -> List[Dict]:
         """
         Format sources for response with enhanced metadata.
+        Filters out duplicate/similar chunks and cleans content.
         
         Args:
             search_results: List of search results
@@ -209,8 +278,21 @@ CONTEXT:
             List of formatted source information
         """
         sources = []
+        seen_content = set()
+        
         for i, result in enumerate(search_results):
             metadata = result.get('metadata', {})
+            content = result.get('content', '')
+            
+            # Clean content - remove page markers and excessive whitespace
+            content = content.replace('--- Page', '').strip()
+            content = ' '.join(content.split())
+            
+            # Skip if this is too similar to already seen content (simple deduplication)
+            content_key = content[:100].lower()  # First 100 chars as key
+            if content_key in seen_content:
+                continue
+            seen_content.add(content_key)
             
             # Calculate relevance score (use reranker if available, else hybrid, else distance)
             relevance_score = 0.0
@@ -221,13 +303,13 @@ CONTEXT:
             else:
                 relevance_score = 1 - result.get('distance', 0)
             
-            # Truncate content preview
-            content_preview = result.get('content', '')
-            if len(content_preview) > 200:
-                content_preview = content_preview[:200] + "..."
+            # Create meaningful content preview
+            content_preview = content
+            if len(content_preview) > 300:
+                content_preview = content_preview[:300] + "..."
             
             sources.append({
-                "source_id": i + 1,
+                "source_id": len(sources) + 1,  # Renumber after deduplication
                 "document_id": metadata.get('document_id', 'unknown'),
                 "document": metadata.get('filename', 'Unknown'),
                 "chunk": metadata.get('chunk_index', 0) + 1,
@@ -235,7 +317,7 @@ CONTEXT:
                 "position_percent": metadata.get('position_percent', 0),
                 "content": content_preview,
                 "relevance_score": round(relevance_score, 4),
-                "chunk_length": metadata.get('chunk_length', len(result.get('content', '')))
+                "chunk_length": len(content)
             })
         
         return sources
@@ -246,7 +328,8 @@ CONTEXT:
         top_k: int = 4,
         answer_type: str = "default",
         filters: Optional[Dict] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None
     ) -> Dict:
         """
         Query the RAG system with advanced features.
@@ -257,10 +340,29 @@ CONTEXT:
             answer_type: Type of answer to generate (default, summary, detailed, etc.)
             filters: Optional metadata filters
             session_id: Optional conversation session ID for context
+            user_id: Optional user identifier for query logging
             
         Returns:
             Dictionary with answer, sources, and metadata
         """
+        # ─── Check cache first (exact + fuzzy/typo matching) ─────────
+        cached = query_cache.get(question, answer_type)
+        if cached:
+            # Cache hit — return instantly without LLM call
+            cached["question"] = question  # Use the actual question asked
+            
+            # Still log to conversation history
+            if session_id and settings.enable_conversation_history:
+                conversation_history.add_message(session_id, "user", question, user_id=user_id)
+                conversation_history.add_message(
+                    session_id, "assistant", cached["answer"],
+                    metadata={"sources": cached["sources"], "answer_type": answer_type, "cache_hit": True},
+                    user_id=user_id
+                )
+            
+            return cached
+        
+        # ─── Cache miss — proceed with full RAG pipeline ──────────
         # Get conversation context if session provided
         conversation_context = ""
         if session_id and settings.enable_conversation_history:
@@ -285,8 +387,8 @@ CONTEXT:
             
             # Add to conversation history if session provided
             if session_id and settings.enable_conversation_history:
-                conversation_history.add_message(session_id, "user", question)
-                conversation_history.add_message(session_id, "assistant", no_docs_response["answer"])
+                conversation_history.add_message(session_id, "user", question, user_id=user_id)
+                conversation_history.add_message(session_id, "assistant", no_docs_response["answer"], user_id=user_id)
             
             return no_docs_response
         
@@ -320,31 +422,45 @@ CONTEXT:
         # Format sources with enhanced metadata
         sources = self.format_sources(search_results)
         
+        retrieval_metadata = {
+            "total_sources": len(sources),
+            "hybrid_search_used": settings.enable_hybrid_search,
+            "reranking_used": settings.enable_reranking,
+            "filters_applied": filters is not None,
+            "cache_hit": False
+        }
+        
         response = {
             "question": question,
             "answer": answer,
             "sources": sources,
             "answer_type": answer_type,
-            "retrieval_metadata": {
-                "total_sources": len(sources),
-                "hybrid_search_used": settings.enable_hybrid_search,
-                "reranking_used": settings.enable_reranking,
-                "filters_applied": filters is not None
-            }
+            "retrieval_metadata": retrieval_metadata
         }
+        
+        # ─── Store in cache for future lookups ────────────────────
+        query_cache.put(
+            question=question,
+            answer=answer,
+            sources=sources,
+            answer_type=answer_type,
+            metadata=retrieval_metadata
+        )
         
         # Add to conversation history if session provided
         if session_id and settings.enable_conversation_history:
             conversation_history.add_message(
                 session_id, 
                 "user", 
-                question
+                question,
+                user_id=user_id
             )
             conversation_history.add_message(
                 session_id, 
                 "assistant", 
                 answer,
-                metadata={"sources": sources, "answer_type": answer_type}
+                metadata={"sources": sources, "answer_type": answer_type},
+                user_id=user_id
             )
         
         return response

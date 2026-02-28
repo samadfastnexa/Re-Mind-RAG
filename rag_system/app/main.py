@@ -20,6 +20,7 @@ from app.models import (
     QueryRequest,
     QueryResponse,
     DocumentInfo,
+    DocumentChunk,
     HealthResponse,
     ConversationSessionCreate,
     ConversationSessionResponse,
@@ -27,7 +28,7 @@ from app.models import (
     FeedbackRequest,
     AnswerType
 )
-from app.auth_models import UserCreate, UserLogin, UserResponse, Token, UserRole
+from app.auth_models import UserCreate, UserUpdate, UserLogin, UserResponse, Token, UserRole
 from app.auth_utils import (
     get_current_user,
     get_current_admin_user,
@@ -38,7 +39,10 @@ from app.services.user_service import (
     init_user_database,
     get_user_by_username,
     create_user,
-    get_all_users
+    get_all_users,
+    update_user_permission,
+    update_user,
+    delete_user
 )
 from app.services.document_processor import document_processor
 from app.services.vector_store import vector_store
@@ -143,6 +147,8 @@ async def register_user(
         email=new_user.email,
         role=new_user.role,
         is_active=new_user.is_active,
+        can_delete_history=new_user.can_delete_history,
+        can_export=new_user.can_export,
         created_at=new_user.created_at
     )
 
@@ -203,6 +209,8 @@ async def get_current_user_info(current_user = Depends(get_current_user)):
         email=current_user.email,
         role=current_user.role,
         is_active=current_user.is_active,
+        can_delete_history=current_user.can_delete_history,
+        can_export=current_user.can_export,
         created_at=current_user.created_at
     )
 
@@ -222,10 +230,109 @@ async def list_all_users(current_user = Depends(get_current_admin_user)):
             email=u.email,
             role=u.role,
             is_active=u.is_active,
+            can_delete_history=u.can_delete_history,
+            can_export=u.can_export,
             created_at=u.created_at
         )
         for u in users
     ]
+
+
+@app.put("/api/auth/users/{user_id}/permissions", tags=["Authentication"])
+async def update_user_permissions(
+    user_id: int,
+    can_delete_history: bool = None,
+    can_export: bool = None,
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Update user permissions (Admin only).
+    
+    **🔒 Requires ADMIN role**
+    
+    - **user_id**: The ID of the user to update
+    - **can_delete_history**: Whether the user can delete conversation history
+    - **can_export**: Whether the user can export conversations
+    """
+    success = update_user_permission(user_id, can_delete_history, can_export)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail="User not found or no permissions to update")
+    
+    return {
+        "success": True,
+        "message": "User permissions updated successfully",
+        "user_id": user_id,
+        "can_delete_history": can_delete_history,
+        "can_export": can_export
+    }
+
+
+@app.put("/api/auth/users/{user_id}", response_model=UserResponse, tags=["Authentication"])
+async def update_user_info(
+    user_id: int,
+    user_data: UserUpdate,
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Update user information (Admin only).
+
+    **🔒 Requires ADMIN role**
+
+    Updatable fields: username, email, password, role, is_active.
+    Only provide the fields you want to change.
+    """
+    try:
+        updated = update_user(
+            user_id=user_id,
+            username=user_data.username,
+            email=user_data.email,
+            password=user_data.password,
+            role=user_data.role,
+            is_active=user_data.is_active,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found or nothing to update")
+
+    return UserResponse(
+        id=updated.id,
+        username=updated.username,
+        email=updated.email,
+        role=updated.role,
+        is_active=updated.is_active,
+        can_delete_history=updated.can_delete_history,
+        can_export=updated.can_export,
+        created_at=updated.created_at
+    )
+
+
+@app.delete("/api/auth/users/{user_id}", tags=["Authentication"])
+async def delete_user_endpoint(
+    user_id: int,
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Delete a user (Admin only).
+
+    **🔒 Requires ADMIN role**
+
+    Cannot delete your own account.
+    """
+    if current_user.id == user_id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+
+    success = delete_user(user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {
+        "success": True,
+        "message": "User deleted successfully",
+        "user_id": user_id
+    }
 
 
 @app.post("/upload", response_model=DocumentUploadResponse, tags=["Documents"])
@@ -333,7 +440,8 @@ async def query_documents(
             top_k=request_data.top_k,
             answer_type=request_data.answer_type.value if hasattr(request_data.answer_type, 'value') else request_data.answer_type,
             filters=request_data.filters,
-            session_id=request_data.session_id
+            session_id=request_data.session_id,
+            user_id=current_user.username
         )
         return QueryResponse(**result)
     except Exception as e:
@@ -341,11 +449,11 @@ async def query_documents(
 
 
 @app.get("/documents", response_model=list[DocumentInfo], tags=["Documents"])
-async def list_documents(current_user = Depends(get_current_user)):
+async def list_documents(current_user = Depends(get_current_admin_user)):
     """
     List all uploaded documents.
     
-    **🔓 Requires authentication - All authenticated users can view documents.**
+    **🔒 Requires ADMIN role - Only admins can view document list.**
     
     Returns a list of all documents in the system with their metadata.
     """
@@ -359,6 +467,33 @@ async def list_documents(current_user = Depends(get_current_user)):
         return [DocumentInfo(**doc) for doc in documents]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error listing documents: {str(e)}")
+
+
+@app.get("/documents/{document_id}/chunks", response_model=list[DocumentChunk], tags=["Documents"])
+async def get_document_chunks(
+    document_id: str,
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Get all chunks for a specific document.
+    
+    **🔒 Requires ADMIN role - Only admins can view document content.**
+    
+    - **document_id**: ID of the document to retrieve chunks for
+    
+    Returns all chunks with their content and metadata.
+    """
+    try:
+        chunks = vector_store.get_document_chunks(document_id)
+        
+        if not chunks:
+            raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+        
+        return [DocumentChunk(**chunk) for chunk in chunks]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving document chunks: {str(e)}")
 
 
 @app.delete("/documents/{document_id}", tags=["Documents"])
@@ -513,12 +648,83 @@ async def submit_feedback(
     - **rating**: 1 (poor) to 5 (excellent)
     - **feedback_text**: Optional detailed feedback
     """
-    # In a production system, you would store this in a database
-    # For now, we'll just acknowledge receipt
+    # Store feedback in query log for admin review
+    conversation_history.update_query_feedback(
+        question=feedback.question,
+        answer=feedback.answer,
+        rating=feedback.rating,
+        feedback_text=feedback.feedback_text,
+        user_id=current_user.username
+    )
     return {
         "success": True,
         "message": "Thank you for your feedback!",
         "rating": feedback.rating
+    }
+
+
+# ============================================================================
+# Admin Analytics Endpoints
+# ============================================================================
+
+@app.get("/api/admin/query-log", tags=["Admin"])
+async def get_query_log(
+    user_id: str = None,
+    limit: int = 100,
+    offset: int = 0,
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Get the query log for admin review.
+    
+    **🔒 Requires ADMIN role**
+    
+    Shows all user queries, answers, ratings, and metadata.
+    Useful for understanding how users interact with the RAG system.
+    
+    - **user_id**: Filter by specific username (optional)
+    - **limit**: Max entries to return (default: 100)
+    - **offset**: Pagination offset
+    """
+    return conversation_history.get_query_log(
+        user_id=user_id,
+        limit=limit,
+        offset=offset
+    )
+
+
+@app.get("/api/admin/query-stats", tags=["Admin"])
+async def get_query_stats(
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Get aggregated query statistics for admin dashboard.
+    
+    **🔒 Requires ADMIN role**
+    
+    Returns total queries, unique users, average rating,
+    queries by type, and queries by user.
+    """
+    stats = conversation_history.get_query_stats()
+    # Include cache stats
+    from app.services.query_cache import query_cache
+    stats["cache_stats"] = query_cache.get_stats()
+    return stats
+
+
+@app.get("/api/admin/sessions", tags=["Admin"])
+async def get_all_sessions(
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Get all active conversation sessions across all users.
+    
+    **🔒 Requires ADMIN role**
+    """
+    sessions = conversation_history.get_all_sessions()
+    return {
+        "sessions": sessions,
+        "total": len(sessions)
     }
 
 

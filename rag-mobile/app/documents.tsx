@@ -1,10 +1,12 @@
 import { StyleSheet, View, Text, FlatList, TouchableOpacity, Alert } from 'react-native';
 import { useState, useEffect } from 'react';
+import { useRouter } from 'expo-router';
 import { ragApi, type Document } from '../services/api';
 
 export default function DocumentsScreen() {
     const [documents, setDocuments] = useState<Document[]>([]);
     const [loading, setLoading] = useState(true);
+    const router = useRouter();
 
     const loadDocuments = async () => {
         try {
@@ -76,12 +78,20 @@ export default function DocumentsScreen() {
                             </Text>
                             <Text style={styles.documentMeta}>{item.chunks} chunks</Text>
                         </View>
-                        <TouchableOpacity
-                            style={styles.deleteButton}
-                            onPress={() => handleDelete(item)}
-                        >
-                            <Text style={styles.deleteButtonText}>🗑️</Text>
-                        </TouchableOpacity>
+                        <View style={styles.actionButtons}>
+                            <TouchableOpacity
+                                style={styles.viewButton}
+                                onPress={() => router.push(`/document-view?id=${item.document_id}&name=${encodeURIComponent(item.filename)}`)}
+                            >
+                                <Text style={styles.viewButtonText}>👁️</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={styles.deleteButton}
+                                onPress={() => handleDelete(item)}
+                            >
+                                <Text style={styles.deleteButtonText}>🗑️</Text>
+                            </TouchableOpacity>
+                        </View>
                     </View>
                 )}
                 contentContainerStyle={styles.listContent}
@@ -147,6 +157,21 @@ const styles = StyleSheet.create({
     documentMeta: {
         fontSize: 12,
         color: '#666',
+    },
+    actionButtons: {
+        flexDirection: 'row',
+        gap: 8,
+    },
+    viewButton: {
+        backgroundColor: '#DBEAFE',
+        borderRadius: 8,
+        width: 40,
+        height: 40,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    viewButtonText: {
+        fontSize: 20,
     },
     deleteButton: {
         padding: 8,

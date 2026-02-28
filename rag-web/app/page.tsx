@@ -47,7 +47,7 @@ export default function Home() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-600 mx-auto"></div>
           <p className="mt-4 text-gray-600">Loading...</p>
         </div>
       </div>
@@ -59,19 +59,19 @@ export default function Home() {
   return (
     <main className="flex min-h-screen flex-col bg-gray-50">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex justify-between items-center">
+      <header className="bg-white border-b border-gray-200 px-3 py-3">
+        <div className="w-full flex justify-between items-center">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">RAG Chat System</h1>
-            <p className="text-sm text-gray-600 mt-1">
+            <h1 className="text-xl font-bold text-gray-900">RAG Chat System</h1>
+            <p className="text-sm text-gray-600">
               Upload documents and ask questions powered by AI
             </p>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             {isAdmin && (
               <button
                 onClick={navigateToAdmin}
-                className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition"
+                className="px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-orange-600 to-orange-700 hover:from-orange-700 hover:to-orange-800 rounded-lg transition shadow-sm"
               >
                 👑 Admin Panel
               </button>
@@ -93,75 +93,80 @@ export default function Home() {
       </header>
 
       {/* Main Content */}
-      <div className="flex-1 max-w-7xl w-full mx-auto p-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
+      <div className="flex-1 w-full px-2 py-3">
+        <div className={`grid grid-cols-1 gap-3 h-full ${isAdmin ? 'lg:grid-cols-4' : 'lg:grid-cols-1'}`}>
           {/* Left Sidebar - Desktop */}
-          <div className="hidden lg:block lg:col-span-1 space-y-6">
-            {isAdmin && (
-              <div className="bg-white rounded-lg shadow-sm p-6">
+          {isAdmin && (
+            <div className="hidden lg:block lg:col-span-1 space-y-4">
+              <div className="bg-white rounded-lg shadow-sm p-4">
                 <h2 className="text-lg font-semibold mb-4">Upload Document</h2>
                 <DocumentUpload />
               </div>
-            )}
 
-            <div className="bg-white rounded-lg shadow-sm p-6">
-              <h2 className="text-lg font-semibold mb-4">Your Documents</h2>
-              <DocumentList isAdmin={isAdmin} />
+              <div className="bg-white rounded-lg shadow-sm p-4">
+                <h2 className="text-lg font-semibold mb-4">Your Documents</h2>
+                <DocumentList isAdmin={isAdmin} />
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Main Chat Area */}
-          <div className="lg:col-span-2">
+          <div className={isAdmin ? 'lg:col-span-3' : 'lg:col-span-1'}>
             {/* Mobile Tabs */}
             <div className="lg:hidden mb-4">
               <div className="flex space-x-2 bg-white rounded-lg p-1 shadow-sm">
                 <button
                   onClick={() => setActiveTab('chat')}
-                  className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'chat'
-                      ? 'bg-blue-500 text-white'
+                  className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                    activeTab === 'chat'
+                      ? 'bg-orange-500 text-white'
                       : 'text-gray-600 hover:bg-gray-100'
-                    }`}
+                  }`}
                 >
                   Chat
                 </button>
                 {isAdmin && (
                   <button
                     onClick={() => setActiveTab('upload')}
-                    className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'upload'
-                        ? 'bg-blue-500 text-white'
+                    className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                      activeTab === 'upload'
+                        ? 'bg-orange-500 text-white'
                         : 'text-gray-600 hover:bg-gray-100'
-                      }`}
+                    }`}
                   >
                     Upload
                   </button>
                 )}
-                <button
-                  onClick={() => setActiveTab('documents')}
-                  className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'documents'
-                      ? 'bg-blue-500 text-white'
-                      : 'text-gray-600 hover:bg-gray-100'
+                {isAdmin && (
+                  <button
+                    onClick={() => setActiveTab('documents')}
+                    className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                      activeTab === 'documents'
+                        ? 'bg-orange-500 text-white'
+                        : 'text-gray-600 hover:bg-gray-100'
                     }`}
-                >
-                  Documents
-                </button>
+                  >
+                    Documents
+                  </button>
+                )}
               </div>
             </div>
 
             {/* Mobile Content */}
             <div className="lg:hidden">
               {activeTab === 'chat' && (
-                <div className="bg-white rounded-lg shadow-sm h-[calc(100vh-250px)]">
+                <div className="bg-white rounded-lg shadow-sm h-[calc(100vh-200px)]">
                   <ChatInterface />
                 </div>
               )}
               {activeTab === 'upload' && isAdmin && (
-                <div className="bg-white rounded-lg shadow-sm p-6">
+                <div className="bg-white rounded-lg shadow-sm p-4">
                   <h2 className="text-lg font-semibold mb-4">Upload Document</h2>
                   <DocumentUpload />
                 </div>
               )}
-              {activeTab === 'documents' && (
-                <div className="bg-white rounded-lg shadow-sm p-6">
+              {activeTab === 'documents' && isAdmin && (
+                <div className="bg-white rounded-lg shadow-sm p-4">
                   <h2 className="text-lg font-semibold mb-4">Your Documents</h2>
                   <DocumentList isAdmin={isAdmin} />
                 </div>
@@ -169,7 +174,7 @@ export default function Home() {
             </div>
 
             {/* Desktop Chat */}
-            <div className="hidden lg:block bg-white rounded-lg shadow-sm h-[calc(100vh-180px)]">
+            <div className="hidden lg:block bg-white rounded-lg shadow-sm h-[calc(100vh-145px)]">
               <ChatInterface />
             </div>
           </div>
@@ -177,8 +182,8 @@ export default function Home() {
       </div>
 
       {/* Footer */}
-      <footer className="bg-white border-t border-gray-200 px-6 py-4 mt-auto">
-        <div className="max-w-7xl mx-auto text-center text-sm text-gray-600">
+      <footer className="bg-white border-t border-gray-200 px-3 py-2 mt-auto">
+        <div className="w-full text-center text-sm text-gray-600">
           <p>Powered by ChromaDB, OpenAI GPT-3.5-turbo, and LangChain</p>
         </div>
       </footer>

@@ -94,6 +94,9 @@ class VectorStore:
         # Rebuild hybrid search index
         self._rebuild_hybrid_index()
         
+        return len(texts)
+    
+    def similarity_search(
         self, 
         query: str, 
         top_k: int = 4,
@@ -185,10 +188,7 @@ class VectorStore:
             )
             if matches:
                 filtered.append(result)
-        return filteredresults['distances'][0][i]
-                })
-        
-        return formatted_results
+        return filtered
     
     def delete_document(self, document_id: str) -> int:
         """
@@ -240,6 +240,40 @@ class VectorStore:
                 documents[doc_id]['chunks'] += 1
         
         return list(documents.values())
+    
+    def get_document_chunks(self, document_id: str) -> List[Dict]:
+        """
+        Get all chunks for a specific document.
+        
+        Args:
+            document_id: The document ID to retrieve chunks for
+            
+        Returns:
+            List of chunks with their content and metadata
+        """
+        results = self.collection.get(
+            where={"document_id": document_id},
+            include=["documents", "metadatas"]
+        )
+        
+        if not results or not results['ids']:
+            return []
+        
+        chunks = []
+        for i, chunk_id in enumerate(results['ids']):
+            # Use chunk_index from metadata, fallback to extracting from chunk_id
+            chunk_number = results['metadatas'][i].get('chunk_index', i)
+            chunks.append({
+                'chunk_id': chunk_id,
+                'content': results['documents'][i],
+                'chunk_number': chunk_number,
+                'metadata': results['metadatas'][i]
+            })
+        
+        # Sort by chunk number
+        chunks.sort(key=lambda x: x['chunk_number'])
+        
+        return chunks
     
     def get_collection_stats(self) -> Dict:
         """

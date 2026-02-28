@@ -21,6 +21,8 @@ class UserInDB(BaseModel):
     hashed_password: str
     role: UserRole
     is_active: bool = True
+    can_delete_history: bool = True  # Permission to delete conversation history
+    can_export: bool = True  # Permission to export conversations
     created_at: datetime
 
 
@@ -39,7 +41,18 @@ class UserResponse(BaseModel):
     email: EmailStr
     role: UserRole
     is_active: bool
+    can_delete_history: bool
+    can_export: bool
     created_at: datetime
+
+
+class UserUpdate(BaseModel):
+    """Schema for updating user information"""
+    username: Optional[str] = Field(None, min_length=3, max_length=50)
+    email: Optional[EmailStr] = None
+    password: Optional[str] = Field(None, min_length=6)
+    role: Optional[UserRole] = None
+    is_active: Optional[bool] = None
 
 
 class UserLogin(BaseModel):

@@ -33,6 +33,22 @@ export default function HomeScreen() {
                         <Text style={styles.cardText}>Manage uploaded documents</Text>
                     </TouchableOpacity>
                 </Link>
+
+                <Link href="/history" asChild>
+                    <TouchableOpacity style={[styles.card, styles.historyCard]}>
+                        <Text style={styles.cardIcon}>🕘</Text>
+                        <Text style={styles.cardTitle}>History</Text>
+                        <Text style={styles.cardText}>View and resume past conversations</Text>
+                    </TouchableOpacity>
+                </Link>
+
+                <Link href="/login" asChild>
+                    <TouchableOpacity style={[styles.card, styles.adminCard]}>
+                        <Text style={styles.cardIcon}>🔐</Text>
+                        <Text style={styles.cardTitle}>Admin</Text>
+                        <Text style={styles.cardText}>Login to access admin features</Text>
+                    </TouchableOpacity>
+                </Link>
             </View>
 
             <View style={styles.footer}>
@@ -88,6 +104,14 @@ const styles = StyleSheet.create({
         borderLeftColor: '#3B82F6',
     },
     docsCard: {
+        borderLeftWidth: 4,
+        borderLeftColor: '#8B5CF6',
+    },
+    historyCard: {
+        borderLeftWidth: 4,
+        borderLeftColor: '#F59E0B',
+    },
+    adminCard: {
         borderLeftWidth: 4,
         borderLeftColor: '#8B5CF6',
     },

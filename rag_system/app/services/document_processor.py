@@ -73,7 +73,15 @@ class DocumentProcessor:
             for page_num, page in enumerate(reader.pages, 1):
                 page_text = page.extract_text()
                 if page_text:
-                    text += f"\n\n--- Page {page_num} ---\n\n{page_text}"
+                    # Remove page markers and clean whitespace
+                    import re
+                    # Remove patterns like "--- Page 1 ---" or "Page 1"
+                    page_text = re.sub(r'---\s*Page\s+\d+\s*---', '', page_text, flags=re.IGNORECASE)
+                    page_text = re.sub(r'^Page\s+\d+\s*$', '', page_text, flags=re.MULTILINE | re.IGNORECASE)
+                    # Clean up excessive whitespace
+                    page_text = ' '.join(page_text.split())
+                    # Add page separator for semantic context
+                    text += f"\n\n{page_text}"
             
             return text, num_pages
         except Exception as e:

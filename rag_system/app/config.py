@@ -36,22 +36,22 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000,exp://,*"
     
     # Chunking Configuration
-    chunk_size: int = 1000
-    chunk_overlap: int = 200
+    chunk_size: int = 600  # Smaller chunks for better granularity
+    chunk_overlap: int = 150  # More overlap for context preservation
     
     # RAG Quality Settings
-    retrieval_top_k: int = 6  # More context for better answers
+    retrieval_top_k: int = 8  # More context for better answers
     llm_temperature: float = 0.3  # Lower for more focused responses
     
     # Hybrid Search Configuration
     enable_hybrid_search: bool = True  # Combine vector + BM25 keyword search
-    bm25_weight: float = 0.3  # 30% BM25, 70% vector similarity
-    hybrid_top_k: int = 20  # Retrieve more before reranking
+    bm25_weight: float = 0.4  # 40% BM25, 60% vector - more keyword matching
+    hybrid_top_k: int = 30  # Retrieve more candidates before reranking
     
     # Reranking Configuration
     enable_reranking: bool = True  # Use reranker model to refine results
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"  # Fast & accurate
-    reranker_top_k: int = 6  # Final number after reranking
+    reranker_top_k: int = 8  # Final number after reranking (matches retrieval_top_k)
     
     # Enhanced Chunking Configuration
     use_semantic_chunking: bool = True  # Split by semantic meaning

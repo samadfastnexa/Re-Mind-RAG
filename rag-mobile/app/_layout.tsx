@@ -37,6 +37,39 @@ export default function RootLayout() {
                     title: 'My Documents',
                 }}
             />
+            <Stack.Screen
+                name="document-view"
+                options={{
+                    title: 'View Document',
+                }}
+            />
+            <Stack.Screen
+                name="history"
+                options={{
+                    title: 'Chat History',
+                }}
+            />
+            <Stack.Screen
+                name="login"
+                options={{
+                    title: 'Login',
+                }}
+            />
+            <Stack.Screen
+                name="admin"
+                options={{
+                    title: 'Admin Dashboard',
+                    headerStyle: {
+                        backgroundColor: '#8B5CF6',
+                    },
+                }}
+            />
+            <Stack.Screen
+                name="query-log"
+                options={{
+                    title: 'Query History',
+                }}
+            />
         </Stack>
     );
 }

@@ -1,0 +1,36 @@
+# Minimal requirements - install this if full requirements.txt fails
+# Then install remaining packages individually if needed
+
+# Core FastAPI
+fastapi
+uvicorn[standard]
+python-multipart
+slowapi
+
+# LangChain basics
+langchain
+langchain-community
+langchain-ollama
+
+# Vector Database
+chromadb
+rank-bm25
+
+# Document Processing
+pypdf2
+
+# ML/AI
+sentence-transformers
+
+# Configuration
+python-dotenv
+pydantic-settings
+email-validator
+
+# Auth
+python-jose[cryptography]
+passlib[bcrypt]
+
+# Utilities
+requests
+numpy

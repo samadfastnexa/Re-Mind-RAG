@@ -1,33 +1,43 @@
 # FastAPI & Server
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-python-multipart==0.0.22
-slowapi==0.1.9
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+slowapi>=0.1.9
 
-# LangChain & AI
-langchain>=0.1.0
-langchain-openai>=0.0.5
-langchain-community>=0.0.10
-langchain-ollama>=0.1.1
-langchain-experimental>=0.0.50
-tiktoken==0.5.2
-sentence-transformers==3.0.1
+# LangChain & AI - Using version ranges for better compatibility
+langchain>=0.1.0,<0.3.0
+langchain-openai>=0.0.5,<0.3.0
+langchain-community>=0.0.10,<0.3.0
+langchain-ollama>=0.1.0
+tiktoken>=0.5.0
+sentence-transformers>=3.0.0
+
+# Experimental features - optional, may have compatibility issues
+# Comment out if causing problems
+langchain-experimental>=0.0.50; python_version >= '3.9'
 
 # Vector Database & Search
-chromadb==0.4.22
-rank-bm25==0.2.2
+chromadb>=0.4.22
+rank-bm25>=0.2.2
 
 # Document Processing
-pypdf2==3.0.1
+pypdf2>=3.0.0
 
 # Configuration & Environment
-python-dotenv==1.0.0
-pydantic-settings==2.1.0
+python-dotenv>=1.0.0
+pydantic-settings>=2.0.0
+pydantic[email]>=2.0.0
+email-validator>=2.0.0
 
 # Authentication & Security
-python-jose[cryptography]==3.5.0
-passlib[bcrypt]==1.7.4
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt==4.0.1  # Pin bcrypt version for passlib compatibility
 
 # Additional Dependencies
-requests==2.31.0
+requests>=2.31.0
 numpy>=1.24.0
+
+# Core dependencies that may be needed
+pydantic>=2.0.0
+aiofiles>=23.0.0

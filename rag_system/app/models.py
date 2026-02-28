@@ -157,6 +157,29 @@ class DocumentInfo(BaseModel):
         }
 
 
+class DocumentChunk(BaseModel):
+    """A single chunk from a document."""
+    chunk_id: str
+    content: str
+    chunk_number: int
+    metadata: dict
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "chunk_id": "doc_123456_chunk_0",
+                "content": "This is the text content of the chunk...",
+                "chunk_number": 0,
+                "metadata": {
+                    "document_id": "doc_123456",
+                    "filename": "example.pdf",
+                    "chunk": 0,
+                    "total_chunks": 25
+                }
+            }
+        }
+
+
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str

@@ -4,10 +4,15 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { api, auth, User } from '@/lib/api';
 import UserManagement from '@/components/UserManagement';
+import QueryHistory from '@/components/QueryHistory';
+import DocumentManagement from '@/components/DocumentManagement';
+
+type Tab = 'users' | 'queries' | 'documents';
 
 export default function AdminPage() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<Tab>('queries');
   const router = useRouter();
 
   useEffect(() => {
@@ -92,7 +97,43 @@ export default function AdminPage() {
 
       {/* Main Content */}
       <div className="flex-1 max-w-7xl w-full mx-auto p-6">
-        <UserManagement />
+        {/* Tabs */}
+        <div className="flex gap-1 mb-6 bg-gray-100 p-1 rounded-xl w-fit">
+          <button
+            onClick={() => setActiveTab('queries')}
+            className={`px-5 py-2 text-sm font-medium rounded-lg transition-all ${
+              activeTab === 'queries'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            📊 Query History
+          </button>
+          <button
+            onClick={() => setActiveTab('users')}
+            className={`px-5 py-2 text-sm font-medium rounded-lg transition-all ${
+              activeTab === 'users'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            👥 Users
+          </button>
+          <button
+            onClick={() => setActiveTab('documents')}
+            className={`px-5 py-2 text-sm font-medium rounded-lg transition-all ${
+              activeTab === 'documents'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            📄 Documents
+          </button>
+        </div>
+
+        {activeTab === 'queries' && <QueryHistory />}
+        {activeTab === 'users' && <UserManagement />}
+        {activeTab === 'documents' && <DocumentManagement />}
       </div>
     </main>
   );

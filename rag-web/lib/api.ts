@@ -12,6 +12,19 @@ export interface Document {
     chunks: number;
 }
 
+export interface DocumentChunk {
+    chunk_id: string;
+    content: string;
+    chunk_number: number;
+    metadata: {
+        document_id: string;
+        filename: string;
+        chunk: number;
+        total_chunks: number;
+        [key: string]: any;
+    };
+}
+
 export interface QueryResponse {
     question: string;
     answer: string;
@@ -71,12 +84,51 @@ export interface User {
     email: string;
     role: 'user' | 'admin';
     is_active: boolean;
+    can_delete_history: boolean;
+    can_export: boolean;
     created_at: string;
 }
 
 export interface LoginResponse {
     access_token: string;
     token_type: string;
+}
+
+export interface QueryLogEntry {
+    id: string;
+    session_id: string;
+    user_id: string;
+    question: string;
+    answer: string;
+    answer_type: string;
+    sources_count: number;
+    timestamp: string;
+    rating: number | null;
+    feedback_text: string | null;
+}
+
+export interface QueryLogResponse {
+    queries: QueryLogEntry[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
+export interface QueryStatsResponse {
+    total_queries: number;
+    unique_users: number;
+    avg_rating: number | null;
+    rated_queries: number;
+    queries_by_type: Record<string, number>;
+    queries_by_user: Record<string, number>;
+}
+
+export interface AdminSession {
+    session_id: string;
+    user_id: string;
+    created_at: string;
+    last_activity: string;
+    message_count: number;
 }
 
 // Auth utilities
@@ -141,6 +193,11 @@ export const api = {
     },
 
     async getCurrentUser(): Promise<User> {
+        const token = auth.getToken();
+        if (!token) {
+            throw new Error('Not authenticated');
+        }
+
         const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
             headers: getAuthHeaders(),
         });
@@ -149,7 +206,13 @@ export const api = {
             if (response.status === 401) {
                 auth.clearToken();
             }
-            throw new Error('Failed to get user info');
+            const errorText = await response.text();
+            let detail = 'Failed to get user info';
+            try {
+                const errorJson = JSON.parse(errorText);
+                detail = errorJson.detail || detail;
+            } catch {}
+            throw new Error(detail);
         }
 
         return response.json();
@@ -221,6 +284,19 @@ export const api = {
         return response.json();
     },
 
+    async getDocumentChunks(documentId: string): Promise<DocumentChunk[]> {
+        const response = await fetch(`${API_BASE_URL}/documents/${documentId}/chunks`, {
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Failed to fetch document chunks' }));
+            throw new Error(error.detail || 'Failed to fetch document chunks');
+        }
+
+        return response.json();
+    },
+
     async deleteDocument(documentId: string): Promise<void> {
         const token = auth.getToken();
         const headers: HeadersInit = {};
@@ -280,6 +356,65 @@ export const api = {
     }): Promise<User> {
         const response = await fetch(`${API_BASE_URL}/api/auth/register`, {
             method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify(userData),
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Failed to create user');
+        }
+
+        return response.json();
+    },
+
+    async updateUserPermission(userId: number, canDeleteHistory: boolean): Promise<void> {
+        const params = new URLSearchParams();
+        params.set('can_delete_history', String(canDeleteHistory));
+
+        const response = await fetch(`${API_BASE_URL}/api/auth/users/${userId}/permissions?${params}`, {
+            method: 'PUT',
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error || 'Failed to update user permissions');
+        }
+    },
+
+    async updateUser(userId: number, data: {
+        username?: string;
+        email?: string;
+        password?: string;
+        role?: 'user' | 'admin';
+        is_active?: boolean;
+    }): Promise<User> {
+        const response = await fetch(`${API_BASE_URL}/api/auth/users/${userId}`, {
+            method: 'PUT',
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Failed to update user');
+        }
+
+        return response.json();
+    },
+
+    async deleteUser(userId: number): Promise<void> {
+        const response = await fetch(`${API_BASE_URL}/api/auth/users/${userId}`, {
+            method: 'DELETE',
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Failed to delete user');
+        }
+    },
 
     // Conversation management endpoints
     async createConversationSession(): Promise<ConversationSession> {
@@ -330,13 +465,47 @@ export const api = {
             throw new Error('Failed to submit feedback');
         }
     },
+
+    // Admin analytics endpoints
+    async getQueryLog(userId?: string, limit = 100, offset = 0): Promise<QueryLogResponse> {
+        const params = new URLSearchParams();
+        if (userId) params.set('user_id', userId);
+        params.set('limit', String(limit));
+        params.set('offset', String(offset));
+
+        const response = await fetch(`${API_BASE_URL}/api/admin/query-log?${params}`, {
             headers: getAuthHeaders(),
-            body: JSON.stringify(userData),
         });
 
         if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'Failed to create user');
+            const error = await response.text(); // Use text() to avoid JSON parse error
+            throw new Error(error || 'Failed to fetch query log');
+        }
+
+        return response.json();
+    },
+
+    async getQueryStats(): Promise<QueryStatsResponse> {
+        const response = await fetch(`${API_BASE_URL}/api/admin/query-stats`, {
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error || 'Failed to fetch query stats');
+        }
+
+        return response.json();
+    },
+
+    async getAdminSessions(): Promise<{ sessions: AdminSession[]; total: number }> {
+        const response = await fetch(`${API_BASE_URL}/api/admin/sessions`, {
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error || 'Failed to fetch sessions');
         }
 
         return response.json();

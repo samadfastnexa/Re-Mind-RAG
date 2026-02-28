@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { api, User } from '@/lib/api';
 
 export default function UserManagement() {
@@ -16,6 +16,24 @@ export default function UserManagement() {
     password: '',
     role: 'user' as 'user' | 'admin',
   });
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [expandedUserId, setExpandedUserId] = useState<number | null>(null);
+
+  // Edit state
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editForm, setEditForm] = useState({
+    username: '',
+    email: '',
+    password: '',
+    role: 'user' as 'user' | 'admin',
+    is_active: true,
+  });
+  const [showEditPassword, setShowEditPassword] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Delete state
+  const [deletingUserId, setDeletingUserId] = useState<number | null>(null);
+  const [confirmDeleteUsername, setConfirmDeleteUsername] = useState('');
 
   useEffect(() => {
     loadUsers();
@@ -31,6 +49,15 @@ export default function UserManagement() {
       setError(err instanceof Error ? err.message : 'Failed to load users');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleToggleDeletePermission = async (userId: number, currentValue: boolean) => {
+    try {
+      await api.updateUserPermission(userId, !currentValue);
+      await loadUsers(); // Reload to get updated data
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update permission');
     }
   };
 
@@ -61,6 +88,62 @@ export default function UserManagement() {
       setError(err instanceof Error ? err.message : 'Failed to create user');
     } finally {
       setCreating(false);
+    }
+  };
+
+  const openEditModal = (user: User) => {
+    setEditingUser(user);
+    setEditForm({
+      username: user.username,
+      email: user.email,
+      password: '',
+      role: user.role,
+      is_active: user.is_active,
+    });
+    setShowEditPassword(false);
+    setError(null);
+  };
+
+  const handleUpdateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUser) return;
+
+    try {
+      setSaving(true);
+      setError(null);
+
+      const payload: Record<string, any> = {};
+      if (editForm.username !== editingUser.username) payload.username = editForm.username;
+      if (editForm.email !== editingUser.email) payload.email = editForm.email;
+      if (editForm.password) payload.password = editForm.password;
+      if (editForm.role !== editingUser.role) payload.role = editForm.role;
+      if (editForm.is_active !== editingUser.is_active) payload.is_active = editForm.is_active;
+
+      if (Object.keys(payload).length === 0) {
+        setEditingUser(null);
+        return;
+      }
+
+      await api.updateUser(editingUser.id, payload);
+      setEditingUser(null);
+      await loadUsers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update user');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteUser = async (userId: number) => {
+    try {
+      setError(null);
+      await api.deleteUser(userId);
+      setDeletingUserId(null);
+      setConfirmDeleteUsername('');
+      if (expandedUserId === userId) setExpandedUserId(null);
+      await loadUsers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete user');
     }
   };
 
@@ -134,15 +217,25 @@ export default function UserManagement() {
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Password
               </label>
-              <input
-                type="password"
-                value={newUser.password}
-                onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Min 6 characters"
-                minLength={6}
-                required
-              />
+              <div className="relative">
+                <input
+                  type={showNewPassword ? 'text' : 'password'}
+                  value={newUser.password}
+                  onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                  className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Min 6 characters"
+                  minLength={6}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNewPassword(!showNewPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                  tabIndex={-1}
+                >
+                  {showNewPassword ? '🙈' : '👁️'}
+                </button>
+              </div>
             </div>
 
             <div>
@@ -198,13 +291,23 @@ export default function UserManagement() {
                   Status
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Delete History
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Created
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Profile
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Actions
                 </th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {users.map((user) => (
-                <tr key={user.id} className="hover:bg-gray-50">
+                <React.Fragment key={user.id}>
+                <tr className="hover:bg-gray-50">
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center">
                       <div className="flex-shrink-0 h-10 w-10 bg-blue-100 rounded-full flex items-center justify-center">
@@ -240,10 +343,108 @@ export default function UserManagement() {
                       {user.is_active ? 'Active' : 'Inactive'}
                     </span>
                   </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <button
+                      onClick={() => handleToggleDeletePermission(user.id, user.can_delete_history)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                        user.can_delete_history ? 'bg-blue-600' : 'bg-gray-200'
+                      }`}
+                      title={user.can_delete_history ? 'Can delete history' : 'Cannot delete history'}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          user.can_delete_history ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     {new Date(user.created_at).toLocaleDateString()}
                   </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <button
+                      onClick={() => setExpandedUserId(expandedUserId === user.id ? null : user.id)}
+                      className="px-3 py-1 text-xs font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition"
+                    >
+                      {expandedUserId === user.id ? 'Hide' : 'View'}
+                    </button>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => openEditModal(user)}
+                        className="px-3 py-1 text-xs font-medium text-amber-700 bg-amber-50 rounded-lg hover:bg-amber-100 transition"
+                        title="Edit user"
+                      >
+                        ✏️ Edit
+                      </button>
+                      <button
+                        onClick={() => { setDeletingUserId(user.id); setConfirmDeleteUsername(''); }}
+                        className="px-3 py-1 text-xs font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition"
+                        title="Delete user"
+                      >
+                        🗑️ Delete
+                      </button>
+                    </div>
+                  </td>
                 </tr>
+                {expandedUserId === user.id && (
+                  <tr className="bg-gray-50">
+                    <td colSpan={8} className="px-6 py-5">
+                      <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+                        <div className="flex items-start gap-5">
+                          {/* Avatar */}
+                          <div className="flex-shrink-0 h-16 w-16 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center">
+                            <span className="text-white text-2xl font-bold">
+                              {user.username.charAt(0).toUpperCase()}
+                            </span>
+                          </div>
+                          {/* Details */}
+                          <div className="flex-1 grid grid-cols-2 gap-4">
+                            <div>
+                              <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Username</p>
+                              <p className="text-sm font-semibold text-gray-900 mt-0.5">{user.username}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Email</p>
+                              <p className="text-sm text-gray-900 mt-0.5">{user.email}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">User ID</p>
+                              <p className="text-sm text-gray-900 mt-0.5">#{user.id}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Role</p>
+                              <p className="text-sm text-gray-900 mt-0.5">{user.role === 'admin' ? '👑 Administrator' : '👤 Regular User'}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Account Status</p>
+                              <span className={`inline-flex items-center gap-1 text-sm mt-0.5 ${
+                                user.is_active ? 'text-green-700' : 'text-red-700'
+                              }`}>
+                                <span className={`h-2 w-2 rounded-full ${user.is_active ? 'bg-green-500' : 'bg-red-500'}`} />
+                                {user.is_active ? 'Active' : 'Inactive'}
+                              </span>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Created</p>
+                              <p className="text-sm text-gray-900 mt-0.5">
+                                {new Date(user.created_at).toLocaleDateString('en-US', {
+                                  year: 'numeric', month: 'long', day: 'numeric'
+                                })}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Delete History Permission</p>
+                              <p className="text-sm text-gray-900 mt-0.5">{user.can_delete_history ? '✅ Allowed' : '❌ Not Allowed'}</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
@@ -275,6 +476,161 @@ export default function UserManagement() {
           <div className="text-sm text-gray-600">Active Users</div>
         </div>
       </div>
+
+      {/* ===== Edit User Modal ===== */}
+      {editingUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 p-6">
+            <div className="flex justify-between items-center mb-5">
+              <h3 className="text-lg font-bold text-gray-900">Edit User — {editingUser.username}</h3>
+              <button onClick={() => setEditingUser(null)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+            </div>
+
+            <form onSubmit={handleUpdateUser} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                <input
+                  type="text"
+                  value={editForm.username}
+                  onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                  minLength={3}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <input
+                  type="email"
+                  value={editForm.email}
+                  onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  New Password <span className="text-gray-400 font-normal">(leave blank to keep current)</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showEditPassword ? 'text' : 'password'}
+                    value={editForm.password}
+                    onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                    className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Min 6 characters"
+                    minLength={6}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowEditPassword(!showEditPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                    tabIndex={-1}
+                  >
+                    {showEditPassword ? '🙈' : '👁️'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+                  <select
+                    value={editForm.role}
+                    onChange={(e) => setEditForm({ ...editForm, role: e.target.value as 'user' | 'admin' })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="user">User</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                  <select
+                    value={editForm.is_active ? 'active' : 'inactive'}
+                    onChange={(e) => setEditForm({ ...editForm, is_active: e.target.value === 'active' })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-3">
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium disabled:bg-gray-400"
+                >
+                  {saving ? 'Saving...' : 'Save Changes'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingUser(null)}
+                  className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition font-medium"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Delete Confirmation Modal ===== */}
+      {deletingUserId !== null && (() => {
+        const userToDelete = users.find(u => u.id === deletingUserId);
+        if (!userToDelete) return null;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="h-10 w-10 rounded-full bg-red-100 flex items-center justify-center">
+                  <span className="text-red-600 text-lg">🗑️</span>
+                </div>
+                <h3 className="text-lg font-bold text-gray-900">Delete User</h3>
+              </div>
+
+              <p className="text-sm text-gray-600 mb-2">
+                Are you sure you want to permanently delete <strong>{userToDelete.username}</strong>?
+                This action cannot be undone.
+              </p>
+
+              <p className="text-sm text-gray-500 mb-4">
+                Type <strong>{userToDelete.username}</strong> to confirm:
+              </p>
+
+              <input
+                type="text"
+                value={confirmDeleteUsername}
+                onChange={(e) => setConfirmDeleteUsername(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 mb-4"
+                placeholder={userToDelete.username}
+                autoFocus
+              />
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => handleDeleteUser(userToDelete.id)}
+                  disabled={confirmDeleteUsername !== userToDelete.username}
+                  className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium disabled:bg-gray-300 disabled:cursor-not-allowed"
+                >
+                  Delete User
+                </button>
+                <button
+                  onClick={() => { setDeletingUserId(null); setConfirmDeleteUsername(''); }}
+                  className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition font-medium"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
