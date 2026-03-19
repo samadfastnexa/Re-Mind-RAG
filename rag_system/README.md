@@ -73,15 +73,17 @@ Start the FastAPI server:
 uvicorn app.main:app --reload
 ```
 
-The server will start at: **http://localhost:8000**
+The server will start at: **http://localhost:8001**
+
+**Note:** Port can be configured in `.env` file (PORT=8001)
 
 ## 📚 API Documentation
 
 Once the server is running, access the interactive Swagger UI:
 
-**Swagger UI**: http://localhost:8000/docs
+**Swagger UI**: http://localhost:8001/docs
 
-**ReDoc**: http://localhost:8000/redoc
+**ReDoc**: http://localhost:8001/redoc
 
 ## 🔧 API Endpoints
 
@@ -92,7 +94,7 @@ Once the server is running, access the interactive Swagger UI:
 Upload a PDF or text file for processing.
 
 ```bash
-curl -X POST "http://localhost:8000/upload" \
+curl -X POST "http://localhost:8001/upload" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@your_document.pdf"
 ```
@@ -116,7 +118,7 @@ curl -X POST "http://localhost:8000/upload" \
 Ask questions about your uploaded documents.
 
 ```bash
-curl -X POST "http://localhost:8000/query" \
+curl -X POST "http://localhost:8001/query" \
   -H "Content-Type: application/json" \
   -d '{
     "question": "What is the main topic of the document?",
@@ -147,7 +149,7 @@ curl -X POST "http://localhost:8000/query" \
 Get a list of all uploaded documents.
 
 ```bash
-curl -X GET "http://localhost:8000/documents"
+curl -X GET "http://localhost:8001/documents"
 ```
 
 ### 4. Delete Document
@@ -157,7 +159,7 @@ curl -X GET "http://localhost:8000/documents"
 Delete a document and all its chunks.
 
 ```bash
-curl -X DELETE "http://localhost:8000/documents/doc_abc123"
+curl -X DELETE "http://localhost:8001/documents/doc_abc123"
 ```
 
 ### 5. Health Check
@@ -167,7 +169,7 @@ curl -X DELETE "http://localhost:8000/documents/doc_abc123"
 Check system health and configuration.
 
 ```bash
-curl -X GET "http://localhost:8000/health"
+curl -X GET "http://localhost:8001/health"
 ```
 
 ### 6. Statistics
@@ -177,7 +179,7 @@ curl -X GET "http://localhost:8000/health"
 Get system statistics.
 
 ```bash
-curl -X GET "http://localhost:8000/stats"
+curl -X GET "http://localhost:8001/stats"
 ```
 
 ## 📁 Project Structure
@@ -222,7 +224,7 @@ Edit `.env` to customize:
 
 ### Using Swagger UI (Recommended)
 
-1. Go to http://localhost:8000/docs
+1. Go to http://localhost:8001/docs
 2. Click on **POST /upload**
 3. Click "Try it out"
 4. Upload your PDF or text file
@@ -239,7 +241,7 @@ import requests
 # Upload document
 with open("document.pdf", "rb") as f:
     response = requests.post(
-        "http://localhost:8000/upload",
+        "http://localhost:8001/upload",
         files={"file": f}
     )
     doc_info = response.json()
@@ -247,7 +249,7 @@ with open("document.pdf", "rb") as f:
 
 # Query document
 response = requests.post(
-    "http://localhost:8000/query",
+    "http://localhost:8001/query",
     json={
         "question": "What is this document about?",
         "top_k": 4

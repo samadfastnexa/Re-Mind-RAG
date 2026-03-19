@@ -34,9 +34,22 @@ class QueryLogService:
                 sources_count INTEGER DEFAULT 0,
                 timestamp TEXT NOT NULL,
                 rating INTEGER,
-                feedback_text TEXT
+                feedback_text TEXT,
+                unanswerable INTEGER DEFAULT 0
             )
         """)
+        
+        # Migrate existing database: Add unanswerable column if it doesn't exist
+        try:
+            cursor.execute("PRAGMA table_info(query_log)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if 'unanswerable' not in columns:
+                cursor.execute("""
+                    ALTER TABLE query_log ADD COLUMN unanswerable INTEGER DEFAULT 0
+                """)
+                print("✅ Migrated database: Added 'unanswerable' column")
+        except Exception as e:
+            print(f"Migration check: {e}")
         
         # Create indexes for better query performance
         cursor.execute("""
@@ -59,7 +72,8 @@ class QueryLogService:
         question: str,
         answer: str,
         answer_type: str = 'default',
-        sources_count: int = 0
+        sources_count: int = 0,
+        unanswerable: bool = False
     ) -> str:
         """
         Add a new query to the log.
@@ -76,9 +90,9 @@ class QueryLogService:
         cursor.execute("""
             INSERT INTO query_log (
                 id, session_id, user_id, question, answer,
-                answer_type, sources_count, timestamp, rating, feedback_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
-        """, (query_id, session_id, user_id, question, answer, answer_type, sources_count, timestamp))
+                answer_type, sources_count, timestamp, rating, feedback_text, unanswerable
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+        """, (query_id, session_id, user_id, question, answer, answer_type, sources_count, timestamp, 1 if unanswerable else 0))
         
         conn.commit()
         conn.close()
@@ -212,7 +226,7 @@ class QueryLogService:
                 'total_queries': 0,
                 'unique_users': 0,
                 'avg_rating': None,
-                'rated_queries': 0,
+                'unanswerable_queries': 0,
                 'queries_by_type': {},
                 'queries_by_user': {}
             }
@@ -230,6 +244,12 @@ class QueryLogService:
         rating_stats = cursor.fetchone()
         avg_rating = rating_stats['avg_rating']
         rated_queries = rating_stats['rated_count']
+        
+        # Unanswerable queries count
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM query_log WHERE unanswerable = 1
+        """)
+        unanswerable_queries = cursor.fetchone()['count']
         
         # Queries by answer type
         cursor.execute("""
@@ -254,6 +274,7 @@ class QueryLogService:
             'unique_users': unique_users,
             'avg_rating': round(avg_rating, 2) if avg_rating is not None else None,
             'rated_queries': rated_queries,
+            'unanswerable_queries': unanswerable_queries,
             'queries_by_type': queries_by_type,
             'queries_by_user': queries_by_user
         }

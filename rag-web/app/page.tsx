@@ -20,12 +20,24 @@ export default function Home() {
         return;
       }
 
+      // Decode user instantly from the local token — zero network latency
+      const localUser = auth.getUserFromToken();
+      if (localUser) {
+        setUser(localUser);
+        setLoading(false); // Show at once; background refresh below
+      }
+
+      // Refresh full user details (permissions, etc.) silently in background
       try {
         const userData = await api.getCurrentUser();
         setUser(userData);
       } catch (error) {
-        console.error('Auth check failed:', error);
-        router.push('/login');
+        console.error('Auth refresh failed:', error);
+        if (!localUser) {
+          // Only redirect if we had nothing to show locally
+          auth.clearToken();
+          router.push('/login');
+        }
       } finally {
         setLoading(false);
       }

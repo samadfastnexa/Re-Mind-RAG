@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { toast } from 'sonner';
 import { api, type Document, type DocumentChunk } from '@/lib/api';
 import DocumentUpload from './DocumentUpload';
 
@@ -9,11 +10,15 @@ export default function DocumentManagement() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [updatingId, setUpdatingId] = useState<string | null>(null);
+    const [updateProgress, setUpdateProgress] = useState<{[key: string]: any}>({});
     const [searchQuery, setSearchQuery] = useState('');
     const [viewingDoc, setViewingDoc] = useState<Document | null>(null);
     const [chunks, setChunks] = useState<DocumentChunk[]>([]);
     const [loadingChunks, setLoadingChunks] = useState(false);
     const [showUpload, setShowUpload] = useState(false);
+    const fileInputRef = useRef<{ [key: string]: HTMLInputElement | null }>({});
+    const updatePollIntervalRef = useRef<{[key: string]: NodeJS.Timeout}>({});
 
     const loadDocuments = async () => {
         try {
@@ -30,6 +35,13 @@ export default function DocumentManagement() {
 
     useEffect(() => {
         loadDocuments();
+        
+        // Cleanup polling on unmount
+        return () => {
+            Object.values(updatePollIntervalRef.current).forEach(interval => {
+                if (interval) clearInterval(interval);
+            });
+        };
     }, []);
 
     const handleDelete = async (doc: Document) => {
@@ -41,10 +53,94 @@ export default function DocumentManagement() {
         try {
             await api.deleteDocument(doc.document_id);
             setDocuments(prev => prev.filter(d => d.document_id !== doc.document_id));
+            toast.success(`Deleted "${doc.filename}" successfully`);
         } catch (err) {
-            alert(err instanceof Error ? err.message : 'Failed to delete document');
+            const errorMsg = err instanceof Error ? err.message : 'Failed to delete document';
+            toast.error(errorMsg);
         } finally {
             setDeletingId(null);
+        }
+    };
+
+    const handleUpdateClick = (documentId: string) => {
+        // Trigger file input click for this document
+        fileInputRef.current[documentId]?.click();
+    };
+
+    const handleFileSelect = async (doc: Document, event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        if (!confirm(`Are you sure you want to update "${doc.filename}"?\n\nThis will:\n• Replace all ${doc.chunks} existing chunks\n• Re-process the document with the new file\n\nOld content will be permanently replaced.`)) {
+            // Reset file input
+            event.target.value = '';
+            return;
+        }
+
+        setUpdatingId(doc.document_id);
+        setUpdateProgress(prev => ({ ...prev, [doc.document_id]: { progress: 2, message: 'Starting update...' } }));
+        
+        try {
+            // Start update
+            const result = await api.updateDocument(doc.document_id, file, 'auto');
+            
+            // Poll for progress
+            const pollUpdateProgress = async () => {
+                try {
+                    const progressData = await api.getUploadProgress(result.upload_id);
+                    setUpdateProgress(prev => ({ ...prev, [doc.document_id]: progressData }));
+                    
+                    if (progressData.status === 'completed') {
+                        // Clear polling
+                        if (updatePollIntervalRef.current[doc.document_id]) {
+                            clearInterval(updatePollIntervalRef.current[doc.document_id]);
+                            delete updatePollIntervalRef.current[doc.document_id];
+                        }
+                        
+                        // Reload documents to get updated data
+                        await loadDocuments();
+                        
+                        setUpdatingId(null);
+                        setUpdateProgress(prev => ({
+                            ...prev,
+                            [doc.document_id]: { progress: 100, message: 'Complete!' }
+                        }));
+                        
+                        setTimeout(() => {
+                            setUpdateProgress(prev => {
+                                const newProgress = { ...prev };
+                                delete newProgress[doc.document_id];
+                                return newProgress;
+                            });
+                        }, 2000);
+                        
+                        toast.success(`Document updated successfully!\nProcessed ${progressData.chunks} chunks from ${progressData.pages} pages`);
+                    } else if (progressData.status === 'failed') {
+                        // Clear polling
+                        if (updatePollIntervalRef.current[doc.document_id]) {
+                            clearInterval(updatePollIntervalRef.current[doc.document_id]);
+                            delete updatePollIntervalRef.current[doc.document_id];
+                        }
+                        
+                        setUpdatingId(null);
+                        toast.error(`Update failed: ${progressData.error}`);
+                    }
+                } catch (err) {
+                    console.error('Error polling update progress:', err);
+                }
+            };
+            
+            // Start polling
+            updatePollIntervalRef.current[doc.document_id] = setInterval(pollUpdateProgress, 500);
+            pollUpdateProgress(); // Initial poll
+            
+        } catch (err) {
+            setUpdatingId(null);
+            const errorMsg = err instanceof Error ? err.message : 'Failed to update document';
+            toast.error(errorMsg);
+        } finally {
+            // Reset file input
+            event.target.value = '';
         }
     };
 
@@ -55,7 +151,8 @@ export default function DocumentManagement() {
             const docChunks = await api.getDocumentChunks(doc.document_id);
             setChunks(docChunks);
         } catch (err) {
-            alert(err instanceof Error ? err.message : 'Failed to load document content');
+            const errorMsg = err instanceof Error ? err.message : 'Failed to load document content';
+            toast.error(errorMsg);
             setViewingDoc(null);
         } finally {
             setLoadingChunks(false);
@@ -241,7 +338,8 @@ export default function DocumentManagement() {
                         </thead>
                         <tbody className="divide-y divide-gray-100">
                             {filteredDocuments.map((doc) => (
-                                <tr key={doc.document_id} className="hover:bg-gray-50 transition">
+                                <React.Fragment key={doc.document_id}>
+                                <tr className="hover:bg-gray-50 transition">
                                     <td className="px-6 py-4">
                                         <div className="flex items-center gap-3">
                                             <div className="flex-shrink-0 w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center">
@@ -254,7 +352,13 @@ export default function DocumentManagement() {
                                                     {doc.filename}
                                                 </p>
                                                 <p className="text-xs text-gray-500">
-                                                    {doc.filename.endsWith('.pdf') ? 'PDF Document' : 'Text Document'}
+                                                    {doc.filename.endsWith('.pdf') 
+                                                        ? 'PDF Document' 
+                                                        : doc.filename.endsWith('.json')
+                                                        ? 'JSON Data'
+                                                        : doc.filename.endsWith('.csv')
+                                                        ? 'CSV Data'
+                                                        : 'Text Document'}
                                                 </p>
                                             </div>
                                         </div>
@@ -279,6 +383,15 @@ export default function DocumentManagement() {
                                     </td>
                                     <td className="px-6 py-4 text-right">
                                         <div className="flex items-center justify-end gap-2">
+                                            {/* Hidden file input for update */}
+                                            <input
+                                                type="file"
+                                                ref={(el) => { fileInputRef.current[doc.document_id] = el; }}
+                                                accept=".pdf,.txt,.text,.json,.csv"
+                                                onChange={(e) => handleFileSelect(doc, e)}
+                                                className="hidden"
+                                            />
+                                            
                                             <button
                                                 onClick={() => handleView(doc)}
                                                 className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 rounded-lg hover:bg-blue-100 transition"
@@ -289,9 +402,30 @@ export default function DocumentManagement() {
                                                 </svg>
                                                 View
                                             </button>
+                                            
+                                            <button
+                                                onClick={() => handleUpdateClick(doc.document_id)}
+                                                disabled={updatingId === doc.document_id || deletingId === doc.document_id}
+                                                className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-green-700 bg-green-50 rounded-lg hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                                            >
+                                                {updatingId === doc.document_id ? (
+                                                    <>
+                                                        <div className="w-4 h-4 border-2 border-green-600 border-t-transparent rounded-full animate-spin" />
+                                                        Updating...
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                                        </svg>
+                                                        Update
+                                                    </>
+                                                )}
+                                            </button>
+                                            
                                             <button
                                                 onClick={() => handleDelete(doc)}
-                                                disabled={deletingId === doc.document_id}
+                                                disabled={deletingId === doc.document_id || updatingId === doc.document_id}
                                                 className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-red-700 bg-red-50 rounded-lg hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed transition"
                                             >
                                                 {deletingId === doc.document_id ? (
@@ -311,6 +445,30 @@ export default function DocumentManagement() {
                                         </div>
                                     </td>
                                 </tr>
+                                {/* Update Progress Row */}
+                                {updatingId === doc.document_id && updateProgress[doc.document_id] && (
+                                    <tr key={`${doc.document_id}-progress`}>
+                                        <td colSpan={5} className="px-6 py-3 bg-green-50">
+                                            <div className="space-y-2">
+                                                <div className="flex items-center justify-between text-sm">
+                                                    <span className="text-green-700 font-medium">
+                                                        {updateProgress[doc.document_id].message || 'Updating...'}
+                                                    </span>
+                                                    <span className="text-green-600 font-semibold">
+                                                        {updateProgress[doc.document_id].progress || 0}%
+                                                    </span>
+                                                </div>
+                                                <div className="w-full bg-green-200 rounded-full h-2 overflow-hidden">
+                                                    <div 
+                                                        className="bg-green-600 h-full transition-all duration-300 ease-out"
+                                                        style={{ width: `${updateProgress[doc.document_id].progress || 0}%` }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                )}
+                                </React.Fragment>
                             ))}
                         </tbody>
                     </table>
@@ -374,10 +532,22 @@ export default function DocumentManagement() {
                                             className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-orange-300 transition"
                                         >
                                             <div className="flex items-center justify-between mb-3">
-                                                <div className="flex items-center gap-2">
+                                                <div className="flex items-center gap-2 flex-wrap">
                                                     <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
                                                         Chunk {chunk.chunk_number + 1} of {chunk.metadata.total_chunks}
                                                     </span>
+                                                    {/* Chunk type badge */}
+                                                    {chunk.metadata.chunk_type && (
+                                                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                                                            chunk.metadata.chunk_type === 'sop_procedure'   ? 'bg-blue-100 text-blue-800' :
+                                                            chunk.metadata.chunk_type === 'matrix_row'      ? 'bg-purple-100 text-purple-800' :
+                                                            chunk.metadata.chunk_type === 'image_reference' ? 'bg-pink-100 text-pink-800' :
+                                                            chunk.metadata.chunk_type === 'structured_chunk'? 'bg-teal-100 text-teal-800' :
+                                                            'bg-gray-100 text-gray-600'
+                                                        }`}>
+                                                            {chunk.metadata.chunk_type.replace(/_/g, ' ')}
+                                                        </span>
+                                                    )}
                                                     {chunk.metadata.page && (
                                                         <span className="text-xs text-gray-500">
                                                             Page {chunk.metadata.page}
@@ -394,7 +564,7 @@ export default function DocumentManagement() {
                                                     {chunk.chunk_id}
                                                 </code>
                                             </div>
-                                            <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+                                            <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap break-words overflow-x-auto">
                                                 {chunk.content}
                                             </p>
                                         </div>

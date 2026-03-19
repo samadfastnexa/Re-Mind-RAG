@@ -5,7 +5,7 @@ Handles text extraction and advanced chunking for RAG system.
 import os
 import uuid
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_experimental.text_splitter import SemanticChunker
@@ -36,6 +36,13 @@ class DocumentProcessor:
                     embeddings = OpenAIEmbeddings(
                         openai_api_key=settings.openai_api_key,
                         model=settings.openai_embedding_model
+                    )
+                elif settings.llm_provider == "ollama":
+                    from langchain_community.embeddings import OllamaEmbeddings
+                    embedding_url = settings.ollama_embedding_base_url or settings.ollama_base_url
+                    embeddings = OllamaEmbeddings(
+                        base_url=embedding_url,
+                        model=settings.ollama_embedding_model
                     )
                 else:
                     from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -107,19 +114,20 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Error reading text file: {str(e)}")
     
-    def process_document(self, file_path: str, filename: str) -> Tuple[List[dict], str, int]:
+    def process_document(self, file_path: str, filename: str, document_id: Optional[str] = None) -> Tuple[List[dict], str, int]:
         """
         Process document and split into chunks with advanced strategies.
         
         Args:
             file_path: Path to document file
             filename: Original filename
+            document_id: Optional document ID (for updates). If not provided, generates a new one.
             
         Returns:
             Tuple of (chunks_with_metadata, document_id, num_pages)
         """
-        # Generate unique document ID
-        doc_id = f"doc_{uuid.uuid4().hex[:12]}"
+        # Use provided document ID or generate a new one
+        doc_id = document_id if document_id else f"doc_{uuid.uuid4().hex[:12]}"
         
         # Extract text based on file type
         file_ext = Path(filename).suffix.lower()

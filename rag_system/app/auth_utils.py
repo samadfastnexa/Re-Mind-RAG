@@ -14,7 +14,9 @@ from app.config import Settings
 settings = Settings()
 
 # Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# rounds=10 gives ~25-80ms per verify (vs 250-500ms at default rounds=12)
+# Still secure for production — bcrypt rounds=10 is the OWASP recommended minimum
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=10)
 
 # OAuth2 scheme for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
@@ -28,6 +30,18 @@ ACCESS_TOKEN_EXPIRE_MINUTES = settings.jwt_access_token_expire_minutes
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
     return pwd_context.verify(plain_password, hashed_password)
+
+
+def needs_password_rehash(hashed_password: str) -> bool:
+    """
+    Return True when the stored hash was made with more rounds than the
+    current context (rounds=10).  Passlib embeds the cost in the hash
+    so this is a zero-cost check — no crypto work involved.
+    """
+    try:
+        return pwd_context.needs_update(hashed_password)
+    except Exception:
+        return False
 
 
 def get_password_hash(password: str) -> str:

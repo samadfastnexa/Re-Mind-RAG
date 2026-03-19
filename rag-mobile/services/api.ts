@@ -4,8 +4,8 @@
 import axios from 'axios';
 
 // Change this to your computer's IP address when testing on physical device
-// Example: http://192.168.1.100:8000
-const API_BASE_URL = 'http://localhost:8000';
+// Example: http://192.168.1.100:8001
+const API_BASE_URL = 'http://localhost:8001';
 
 export interface Document {
     document_id: string;
@@ -97,6 +97,7 @@ export interface QueryStatsResponse {
     unique_users: number;
     avg_rating: number | null;
     rated_queries: number;
+    unanswerable_queries: number;
     queries_by_type: { [key: string]: number };
     queries_by_user: { [key: string]: number };
 }
@@ -153,6 +154,23 @@ export const ragApi = {
 
     async deleteDocument(documentId: string): Promise<void> {
         await api.delete(`/documents/${documentId}`);
+    },
+
+    async updateDocument(documentId: string, uri: string, fileName: string): Promise<UploadResponse> {
+        const formData = new FormData();
+        formData.append('file', {
+            uri,
+            name: fileName,
+            type: fileName.endsWith('.pdf') ? 'application/pdf' : 'text/plain',
+        } as any);
+
+        const response = await api.put(`/documents/${documentId}`, formData, {
+            headers: {
+                'Content-Type': 'multipart/form-data',
+            },
+        });
+
+        return response.data;
     },
 
     async getStats() {

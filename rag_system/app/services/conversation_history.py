@@ -86,6 +86,9 @@ class ConversationHistory:
             user_messages = [m for m in session['messages'] if m['role'] == 'user']
             question = user_messages[-1]['content'] if user_messages else ''
             
+            # Check if query was unanswerable
+            unanswerable = (metadata or {}).get('unanswerable', False)
+            
             # Save to persistent database
             query_log_service.add_query(
                 session_id=session_id,
@@ -93,7 +96,8 @@ class ConversationHistory:
                 question=question,
                 answer=content,
                 answer_type=(metadata or {}).get('answer_type', 'default'),
-                sources_count=len((metadata or {}).get('sources', []))
+                sources_count=len((metadata or {}).get('sources', [])),
+                unanswerable=unanswerable
             )
         
         # Keep only the last N messages

@@ -31,10 +31,10 @@ npm install
 
 ```typescript
 // For testing on physical device, use your computer's IP address
-const API_BASE_URL = 'http://192.168.1.100:8000';  // Replace with your IP
+const API_BASE_URL = 'http://192.168.1.100:8001';  // Replace with your IP
 
 // For emulator/simulator
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = 'http://localhost:8001';
 ```
 
 To find your IP address:

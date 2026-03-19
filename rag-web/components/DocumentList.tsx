@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { toast } from 'sonner';
 import { api, type Document } from '@/lib/api';
 
 interface DocumentListProps {
@@ -31,7 +32,7 @@ export default function DocumentList({ isAdmin }: DocumentListProps) {
 
     const handleDelete = async (documentId: string) => {
         if (!isAdmin) {
-            alert('Only admins can delete documents');
+            toast.error('Only admins can delete documents');
             return;
         }
 
@@ -40,8 +41,10 @@ export default function DocumentList({ isAdmin }: DocumentListProps) {
         try {
             await api.deleteDocument(documentId);
             await loadDocuments();
+            toast.success('Document deleted successfully');
         } catch (err) {
-            alert(err instanceof Error ? err.message : 'Failed to delete document');
+            const errorMsg = err instanceof Error ? err.message : 'Failed to delete document';
+            toast.error(errorMsg);
         }
     };
 

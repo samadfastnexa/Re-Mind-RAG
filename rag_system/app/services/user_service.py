@@ -129,6 +129,22 @@ def get_user_by_email(email: str) -> Optional[UserInDB]:
     return None
 
 
+def update_user_password_hash(username: str, new_hashed_password: str) -> None:
+    """
+    Overwrite the stored bcrypt hash for a user.
+    Called automatically at login when the stored hash uses more rounds
+    than the current context (i.e. was created before rounds were lowered).
+    """
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE users SET hashed_password = ? WHERE username = ?",
+        (new_hashed_password, username)
+    )
+    conn.commit()
+    conn.close()
+
+
 def create_user(user: UserCreate) -> UserInDB:
     """Create a new user."""
     conn = sqlite3.connect(str(DB_PATH))

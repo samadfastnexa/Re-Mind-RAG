@@ -100,7 +100,12 @@ class HybridSearcher:
         
         # Add vector results
         for result in vector_results:
-            doc_id = result.get('metadata', {}).get('document_id', '') + '_' + str(result.get('metadata', {}).get('chunk_index', 0))
+            # Use actual ChromaDB ID if present, otherwise construct it
+            doc_id = result.get('id') or (
+                result.get('metadata', {}).get('document_id', '') +
+                '_chunk_' +
+                str(result.get('metadata', {}).get('chunk_index', 0))
+            )
             similarity = 1 - result.get('distance', 0)
             normalized_score = (similarity - min_vector_score) / vector_range if vector_range > 0 else 0
             

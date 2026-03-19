@@ -1,3 +1,9 @@
+# =================================
+# RAG System - Complete Dependencies
+# =================================
+# Last Updated: 2026-03-05
+# Python Version: 3.9+
+
 # FastAPI & Server
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
@@ -20,11 +26,23 @@ langchain-experimental>=0.0.50; python_version >= '3.9'
 chromadb>=0.4.22
 rank-bm25>=0.2.2
 
-# Document Processing
+# Document Processing - Basic
 pypdf2>=3.0.0
+python-dotenv>=1.0.0
+
+# Document Processing - Advanced (Hybrid System)
+pdfplumber>=0.10.0  # Advanced PDF parsing with layout awareness
+unstructured>=0.11.0  # Intelligent document parsing for tables/images
+unstructured[local-inference]>=0.11.0  # Local inference for document layout
+pdf2image>=1.16.0  # Extract images from PDFs
+pillow>=10.0.0  # Image processing
+pytesseract>=0.3.10  # OCR for images (optional)
+pandas>=2.0.0  # Table handling for structured data
+tabulate>=0.9.0  # Table formatting
+python-docx>=1.1.0  # Word document (.docx) table extraction
 
 # Configuration & Environment
-python-dotenv>=1.0.0
+pydantic>=2.0.0
 pydantic-settings>=2.0.0
 pydantic[email]>=2.0.0
 email-validator>=2.0.0
@@ -34,10 +52,31 @@ python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 bcrypt==4.0.1  # Pin bcrypt version for passlib compatibility
 
-# Additional Dependencies
+# Utilities
 requests>=2.31.0
 numpy>=1.24.0
-
-# Core dependencies that may be needed
-pydantic>=2.0.0
 aiofiles>=23.0.0
+
+# =================================
+# Installation Notes
+# =================================
+# 1. Activate virtual environment first:
+#    .\.venv\Scripts\Activate.ps1
+#
+# 2. Install dependencies:
+#    pip install -r requirements.txt
+#
+# 3. If installation fails, try:
+#    pip install -r requirements-minimal.txt
+#    Then install remaining packages individually
+#
+# =================================
+# Frontend Dependencies (Separate)
+# =================================
+# Installed via npm in rag-web/:
+# - next
+# - react
+# - sonner (toast notifications)
+# - tailwindcss
+# - See rag-web/package.json for complete list
+

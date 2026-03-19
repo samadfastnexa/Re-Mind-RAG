@@ -1,6 +1,7 @@
 """
 ChromaDB vector store service for document embeddings.
 """
+import json
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from typing import List, Dict, Optional
@@ -28,12 +29,13 @@ class VectorStore:
                 openai_api_key=settings.openai_api_key,
                 model=settings.openai_embedding_model
             )
-        else:  # ollama - use local HuggingFace embeddings
-            from langchain_community.embeddings import HuggingFaceEmbeddings
-            self.embeddings = HuggingFaceEmbeddings(
-                model_name="all-MiniLM-L6-v2",  # Fast, small, and accurate
-                model_kwargs={'device': 'cpu'},
-                encode_kwargs={'normalize_embeddings': True}
+        else:  # ollama - use Ollama embeddings (no internet download required)
+            from langchain_community.embeddings import OllamaEmbeddings
+            # Use separate embedding URL if configured, otherwise use main ollama_base_url
+            embedding_url = settings.ollama_embedding_base_url or settings.ollama_base_url
+            self.embeddings = OllamaEmbeddings(
+                base_url=embedding_url,
+                model=settings.ollama_embedding_model
             )
         
         # Get or create collection
@@ -63,6 +65,30 @@ class VectorStore:
         except Exception as e:
             print(f"Warning: Could not rebuild hybrid search index: {e}")
     
+    def _sanitize_metadata(self, metadata: Dict) -> Dict:
+        """
+        Sanitize metadata to ensure ChromaDB compatibility.
+        ChromaDB only accepts: str, int, float, bool, or list of these types.
+        """
+        sanitized = {}
+        for key, value in metadata.items():
+            if value is None:
+                # Skip None values
+                continue
+            elif isinstance(value, (str, int, float, bool)):
+                # Primitive types are OK
+                sanitized[key] = value
+            elif isinstance(value, list):
+                # Lists are OK if they contain primitives or are already serialized
+                sanitized[key] = value
+            elif isinstance(value, dict):
+                # Dicts need to be serialized to JSON
+                sanitized[key] = json.dumps(value)
+            else:
+                # Convert anything else to string
+                sanitized[key] = str(value)
+        return sanitized
+    
     def add_documents(self, chunks_with_metadata: List[dict], document_id: str) -> int:
         """
         Add document chunks to vector store.
@@ -75,7 +101,8 @@ class VectorStore:
             Number of chunks added
         """
         texts = [chunk["text"] for chunk in chunks_with_metadata]
-        metadatas = [chunk["metadata"] for chunk in chunks_with_metadata]
+        # Sanitize metadata to ensure ChromaDB compatibility
+        metadatas = [self._sanitize_metadata(chunk["metadata"]) for chunk in chunks_with_metadata]
         
         # Generate embeddings
         embeddings_list = self.embeddings.embed_documents(texts)
@@ -134,14 +161,18 @@ class VectorStore:
             include=["documents", "metadatas", "distances"],
             where=where_clause
         )
-        
+
         # Format vector results
         vector_results = []
         if results and results['documents'] and len(results['documents']) > 0:
             for i in range(len(results['documents'][0])):
+                meta = results['metadatas'][0][i]
+                # Construct ID to match ChromaDB format for BM25 merging
+                chunk_id = f"{meta.get('document_id', '')}_chunk_{meta.get('chunk_index', i)}"
                 vector_results.append({
+                    "id": chunk_id,
                     "content": results['documents'][0][i],
-                    "metadata": results['metadatas'][0][i],
+                    "metadata": meta,
                     "distance": results['distances'][0][i]
                 })
         
@@ -230,11 +261,19 @@ class VectorStore:
         for metadata in results['metadatas']:
             doc_id = metadata.get('document_id')
             if doc_id and doc_id not in documents:
+                # Deserialize pages from JSON if it's a string
+                pages = metadata.get('pages')
+                if isinstance(pages, str):
+                    try:
+                        pages = json.loads(pages)
+                    except (json.JSONDecodeError, TypeError):
+                        pages = None
+                
                 documents[doc_id] = {
                     'document_id': doc_id,
                     'filename': metadata.get('filename', 'Unknown'),
                     'chunks': 0,
-                    'pages': metadata.get('pages')
+                    'pages': pages
                 }
             if doc_id:
                 documents[doc_id]['chunks'] += 1
@@ -275,6 +314,44 @@ class VectorStore:
         
         return chunks
     
+    def find_document_by_hash(self, file_hash: str) -> Optional[Dict]:
+        """
+        Find a document by its file hash.
+        
+        Args:
+            file_hash: SHA256 hash of the file content
+            
+        Returns:
+            Document information if found, None otherwise
+        """
+        # Get all items
+        results = self.collection.get(include=["metadatas"])
+        
+        if not results or not results['metadatas']:
+            return None
+        
+        # Look for matching hash
+        for metadata in results['metadatas']:
+            if metadata.get('file_hash') == file_hash:
+                doc_id = metadata.get('document_id')
+                filename = metadata.get('filename', 'Unknown')
+                
+                # Count chunks for this document
+                doc_results = self.collection.get(
+                    where={"document_id": doc_id},
+                    include=["metadatas"]
+                )
+                chunks = len(doc_results['ids']) if doc_results and doc_results['ids'] else 0
+                
+                return {
+                    'document_id': doc_id,
+                    'filename': filename,
+                    'chunks': chunks,
+                    'file_hash': file_hash
+                }
+        
+        return None
+    
     def get_collection_stats(self) -> Dict:
         """
         Get statistics about the collection.
@@ -287,6 +364,78 @@ class VectorStore:
             "total_chunks": count,
             "collection_name": settings.collection_name
         }
+    
+    def get_available_filters(self) -> Dict[str, List]:
+        """
+        Extract unique values for filterable fields from all documents.
+        
+        Returns:
+            Dictionary with available values for each filter field
+        """
+        try:
+            # Get all documents
+            results = self.collection.get(
+                include=['metadatas']
+            )
+            
+            if not results or not results['metadatas']:
+                return {
+                    'control_owner': [],
+                    'priority': [],
+                    'compliance_tags': [],
+                    'applies_to': [],
+                    'group': [],
+                    'section_id': []
+                }
+            
+            # Extract unique values
+            control_owners = set()
+            priorities = set()
+            compliance_tags = set()
+            applies_to = set()
+            groups = set()
+            section_ids = set()
+            
+            for metadata in results['metadatas']:
+                if metadata.get('control_owner'):
+                    control_owners.add(metadata['control_owner'])
+                if metadata.get('priority'):
+                    priorities.add(metadata['priority'])
+                if metadata.get('compliance_tags'):
+                    # Handle both string and list formats
+                    tags = metadata['compliance_tags']
+                    if isinstance(tags, str):
+                        try:
+                            tags = json.loads(tags)
+                        except:
+                            tags = [tags]
+                    if isinstance(tags, list):
+                        compliance_tags.update(tags)
+                if metadata.get('applies_to'):
+                    applies_to.add(metadata['applies_to'])
+                if metadata.get('group'):
+                    groups.add(metadata['group'])
+                if metadata.get('section_id'):
+                    section_ids.add(metadata['section_id'])
+            
+            return {
+                'control_owner': sorted(list(control_owners)),
+                'priority': sorted(list(priorities), key=lambda x: ['Critical', 'High', 'Medium', 'Low'].index(x) if x in ['Critical', 'High', 'Medium', 'Low'] else 999),
+                'compliance_tags': sorted(list(compliance_tags)),
+                'applies_to': sorted(list(applies_to)),
+                'group': sorted(list(groups)),
+                'section_id': sorted(list(section_ids))
+            }
+        except Exception as e:
+            print(f"Error getting available filters: {e}")
+            return {
+                'control_owner': [],
+                'priority': [],
+                'compliance_tags': [],
+                'applies_to': [],
+                'group': [],
+                'section_id': []
+            }
 
 
 # Global instance

@@ -2,14 +2,16 @@
 FastAPI application for RAG system.
 Provides REST API with Swagger documentation.
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from typing import List
 import os
+import hashlib
 from datetime import datetime, timedelta
 from app.config import settings
 
@@ -17,6 +19,7 @@ from app.config import settings
 limiter = Limiter(key_func=get_remote_address)
 from app.models import (
     DocumentUploadResponse,
+    UploadProgress,
     QueryRequest,
     QueryResponse,
     DocumentInfo,
@@ -26,13 +29,23 @@ from app.models import (
     ConversationSessionResponse,
     ConversationHistoryResponse,
     FeedbackRequest,
-    AnswerType
+    AnswerType,
+    TerritoryData,
+    TerritoryBulkImportRequest,
+    TerritoryBulkImportResponse,
+    RegionResponse,
+    CityResponse,
+    ZoneResponse,
+    TerritoryResponse,
+    TerritorySearchResult
 )
 from app.auth_models import UserCreate, UserUpdate, UserLogin, UserResponse, Token, UserRole
 from app.auth_utils import (
     get_current_user,
     get_current_admin_user,
     verify_password,
+    needs_password_rehash,
+    get_password_hash,
     create_access_token
 )
 from app.services.user_service import (
@@ -42,15 +55,35 @@ from app.services.user_service import (
     get_all_users,
     update_user_permission,
     update_user,
-    delete_user
+    delete_user,
+    update_user_password_hash
 )
 from app.services.document_processor import document_processor
+from app.services.advanced_document_processor import advanced_document_processor
+from app.services.hybrid_processor import hybrid_processor
 from app.services.vector_store import vector_store
 from app.services.rag_chain import rag_chain
 from app.services.conversation_history import conversation_history
+from app.services.ticket_service import ticket_service
+from app.services.upload_progress import upload_progress_tracker
+from app.services.territory_service import TerritoryService
+
+
+def get_active_processor(use_hybrid: bool = True):
+    """Get the active document processor based on configuration."""
+    # Prefer hybrid processor for intelligent routing
+    if use_hybrid and settings.use_advanced_processing:
+        return hybrid_processor
+    elif settings.use_advanced_processing:
+        return advanced_document_processor
+    return document_processor
+
 
 # Initialize user database on startup
 init_user_database()
+
+# Initialize territory service
+territory_service = TerritoryService()
 
 
 # Initialize FastAPI app
@@ -179,12 +212,21 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     if not user.is_active:
         raise HTTPException(
             status_code=403,
             detail="User account is inactive"
         )
+
+    # Auto-upgrade hash if it was stored at a higher bcrypt cost (e.g. rounds=12).
+    # The check is instant (reads the embedded cost prefix); only the rehash costs
+    # a tiny bit more on this one login — every login after will be fast.
+    if needs_password_rehash(user.hashed_password):
+        try:
+            update_user_password_hash(user.username, get_password_hash(form_data.password))
+        except Exception:
+            pass  # Never block login if rehash fails
     
     # Create access token
     access_token_expires = timedelta(minutes=settings.jwt_access_token_expire_minutes)
@@ -335,19 +377,302 @@ async def delete_user_endpoint(
     }
 
 
-@app.post("/upload", response_model=DocumentUploadResponse, tags=["Documents"])
+async def process_update_background(
+    upload_id: str,
+    document_id: str,
+    file_content: bytes,
+    filename: str,
+    file_ext: str,
+    file_hash: str = None,
+    processing_mode: str = "auto"
+):
+    """Background task to process document update."""
+    try:
+        import asyncio
+        import uuid
+        # Small delay to ensure frontend can catch initial state
+        await asyncio.sleep(0.1)
+        
+        # Update progress: Saving file
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="processing",
+            progress=10,
+            message="Saving updated file...",
+            document_id=document_id
+        )
+        
+        # Get processor (prefer hybrid for intelligent routing)
+        processor = get_active_processor(use_hybrid=True)
+        
+        # Save file
+        if hasattr(processor, 'save_uploaded_file'):
+            file_path = processor.save_uploaded_file(file_content, filename)
+        else:
+            # Fallback for processors without save method
+            unique_filename = f"{uuid.uuid4().hex[:8]}_{filename}"
+            file_path = os.path.join(settings.upload_dir, unique_filename)
+            with open(file_path, 'wb') as f:
+                f.write(file_content)
+        
+        # Update progress: Processing document
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="processing",
+            progress=20,
+            message=f"Analyzing document structure ({processing_mode} mode)...",
+            document_id=document_id
+        )
+        
+        # Process document with hybrid processor, using existing document_id
+        try:
+            # Update for processing start
+            upload_progress_tracker.update_progress(
+                upload_id,
+                status="processing",
+                progress=35,
+                message="Processing document with intelligent routing...",
+                document_id=document_id
+            )
+            
+            # Use hybrid processor with intelligent routing
+            chunks_with_metadata, processed_doc_id, num_pages, image_paths = await processor.process_document(
+                file_path=file_path,
+                filename=filename,
+                document_id=document_id,
+                processing_mode=processing_mode,
+                save_images=settings.save_extracted_images
+            )
+            
+            # Update after processing
+            upload_progress_tracker.update_progress(
+                upload_id,
+                status="processing",
+                progress=55,
+                message=f"Successfully processed {len(chunks_with_metadata)} chunks...",
+                document_id=document_id
+            )
+            
+        except Exception as e:
+            print(f"Error processing document: {e}")
+            raise
+        
+        # Update progress: Preparing for vectorization
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="vectorizing",
+            progress=65,
+            message=f"Preparing {len(chunks_with_metadata)} chunks for vectorization...",
+            document_id=document_id,
+            pages=num_pages
+        )
+        
+        # Add file hash to all chunk metadata for duplicate detection
+        if file_hash:
+            for chunk in chunks_with_metadata:
+                chunk["metadata"]["file_hash"] = file_hash
+        
+        # Update progress: Creating embeddings
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="vectorizing",
+            progress=75,
+            message=f"Creating embeddings for {len(chunks_with_metadata)} chunks...",
+            document_id=document_id,
+            pages=num_pages
+        )
+        
+        # Add to vector store
+        num_chunks = vector_store.add_documents(chunks_with_metadata, document_id)
+        
+        # Update progress: Finalizing
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="vectorizing",
+            progress=95,
+            message="Finalizing document update...",
+            document_id=document_id,
+            pages=num_pages,
+            chunks=num_chunks
+        )
+        
+        # Complete
+        upload_progress_tracker.complete_upload(upload_id, document_id, num_pages, num_chunks)
+        
+    except Exception as e:
+        upload_progress_tracker.fail_upload(upload_id, str(e))
+
+
+async def process_document_background(
+    upload_id: str,
+    file_content: bytes,
+    filename: str,
+    file_ext: str,
+    file_hash: str = None,
+    processing_mode: str = "auto"
+):
+    """Background task to process uploaded document."""
+    try:
+        import asyncio
+        import uuid
+        # Small delay to ensure frontend can catch initial state
+        await asyncio.sleep(0.1)
+        
+        # Update progress: Saving file
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="processing",
+            progress=10,
+            message="Saving file..."
+        )
+        
+        # Get processor (prefer hybrid for intelligent routing)
+        processor = get_active_processor(use_hybrid=True)
+        
+        # Save file
+        if hasattr(processor, 'save_uploaded_file'):
+            file_path = processor.save_uploaded_file(file_content, filename)
+        else:
+            # Fallback for processors without save method
+            unique_filename = f"{uuid.uuid4().hex[:8]}_{filename}"
+            file_path = os.path.join(settings.upload_dir, unique_filename)
+            with open(file_path, 'wb') as f:
+                f.write(file_content)
+        
+        # Update progress: Processing document
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="processing",
+            progress=20,
+            message=f"Analyzing document structure ({processing_mode} mode)..."
+        )
+        
+        # Process document with hybrid processor
+        try:
+            # Update for processing start
+            upload_progress_tracker.update_progress(
+                upload_id,
+                status="processing",
+                progress=35,
+                message="Processing document with intelligent routing..."
+            )
+            
+            # Use hybrid processor with intelligent routing
+            chunks_with_metadata, doc_id, num_pages, image_paths = await processor.process_document(
+                file_path=file_path,
+                filename=filename,
+                processing_mode=processing_mode,
+                save_images=settings.save_extracted_images
+            )
+            
+            # Update after processing
+            upload_progress_tracker.update_progress(
+                upload_id,
+                status="processing",
+                progress=55,
+                message=f"Successfully processed {len(chunks_with_metadata)} chunks..."
+            )
+            
+        except Exception as e:
+            print(f"Error processing document: {e}")
+            raise
+        
+        # Update progress: Preparing for vectorization
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="vectorizing",
+            progress=65,
+            message=f"Preparing {len(chunks_with_metadata)} chunks for vectorization...",
+            document_id=doc_id,
+            pages=num_pages
+        )
+        
+        # Add file hash to all chunk metadata for duplicate detection
+        if file_hash:
+            for chunk in chunks_with_metadata:
+                chunk["metadata"]["file_hash"] = file_hash
+        
+        # Update progress: Creating embeddings
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="vectorizing",
+            progress=75,
+            message=f"Creating embeddings for {len(chunks_with_metadata)} chunks...",
+            document_id=doc_id,
+            pages=num_pages
+        )
+        
+        # Add to vector store
+        num_chunks = vector_store.add_documents(chunks_with_metadata, doc_id)
+        
+        # Update progress: Finalizing
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="vectorizing",
+            progress=95,
+            message="Finalizing document indexing...",
+            document_id=doc_id,
+            pages=num_pages,
+            chunks=num_chunks
+        )
+        
+        # Complete
+        upload_progress_tracker.complete_upload(upload_id, doc_id, num_pages, num_chunks)
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in background processing: {error_details}")
+        upload_progress_tracker.fail_upload(upload_id, str(e))
+
+
+@app.get("/upload/progress/{upload_id}", response_model=UploadProgress, tags=["Documents"])
+async def get_upload_progress(
+    upload_id: str,
+    current_user = Depends(get_current_user)
+):
+    """
+    Get the progress of a document upload.
+    
+    **🔓 Requires authentication - Check upload progress.**
+    
+    - **upload_id**: The upload ID returned from the upload endpoint
+    
+    Returns progress information including status, percentage, and messages.
+    """
+    progress = upload_progress_tracker.get_progress(upload_id)
+    
+    if not progress:
+        raise HTTPException(status_code=404, detail="Upload ID not found")
+    
+    return UploadProgress(
+        status=progress["status"],
+        progress=progress["progress"],
+        message=progress["message"],
+        document_id=progress.get("document_id"),
+        filename=progress.get("filename"),
+        pages=progress.get("pages"),
+        chunks=progress.get("chunks"),
+        error=progress.get("error")
+    )
+
+
+@app.post("/upload", tags=["Documents"])
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    processing_mode: str = Form("auto"),  # auto, structured, text, hybrid
     current_user = Depends(get_current_admin_user)
 ):
     """
-    Upload a PDF or text document for processing.
+    Upload a document for processing with intelligent routing.
     
     **🔒 Requires ADMIN role - Only admins can upload documents.**
     
-    - **file**: PDF or TXT file to upload (max 50MB)
+    - **file**: PDF, TXT, JSON, or CSV file to upload (max 50MB)
+    - **processing_mode**: "auto" (detect), "structured" (JSON), "text" (chunking), "hybrid" (both)
     
-    Returns document ID and processing information.
+    Returns upload ID for tracking progress. Use /upload/progress/{upload_id} to check status.
     
     ⚠️ Normal users cannot upload documents. Contact an admin to get uploader permissions.
     """
@@ -357,14 +682,29 @@ async def upload_document(
             raise HTTPException(status_code=400, detail="No filename provided")
         
         file_ext = os.path.splitext(file.filename)[1].lower()
-        if file_ext not in ['.pdf', '.txt', '.text']:
+        if file_ext not in ['.pdf', '.txt', '.text', '.json', '.csv']:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported file type: {file_ext}. Only PDF and TXT files are supported."
+                detail=f"Unsupported file type: {file_ext}. Only PDF, TXT, JSON, and CSV files are supported."
             )
         
         # Read file content
         file_content = await file.read()
+        
+        # Calculate file hash for duplicate detection
+        file_hash = hashlib.sha256(file_content).hexdigest()
+        
+        # Check for duplicate
+        existing_doc = vector_store.find_document_by_hash(file_hash)
+        if existing_doc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"This document already exists in the system. "
+                       f"Document ID: {existing_doc['document_id']}, "
+                       f"Filename: {existing_doc['filename']}, "
+                       f"Chunks: {existing_doc['chunks']}. "
+                       f"Please delete the existing document first if you want to re-upload it."
+            )
         
         # Check file size
         file_size_mb = len(file_content) / (1024 * 1024)
@@ -374,30 +714,39 @@ async def upload_document(
                 detail=f"File too large: {file_size_mb:.2f}MB. Maximum size is {settings.max_file_size_mb}MB."
             )
         
-        # Save file
-        file_path = document_processor.save_uploaded_file(file_content, file.filename)
+        # Create upload tracking
+        upload_id = upload_progress_tracker.create_upload(file.filename)
         
-        # Process document
-        chunks_with_metadata, doc_id, num_pages = document_processor.process_document(
-            file_path, file.filename
+        # Update initial progress immediately
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="uploading",
+            progress=5,
+            message="File received, preparing to process..."
         )
         
-        # Add to vector store
-        num_chunks = vector_store.add_documents(chunks_with_metadata, doc_id)
-        
-        return DocumentUploadResponse(
-            success=True,
-            message="Document uploaded and processed successfully",
-            document_id=doc_id,
-            filename=file.filename,
-            pages=num_pages,
-            chunks=num_chunks
+        # Schedule background processing
+        background_tasks.add_task(
+            process_document_background,
+            upload_id,
+            file_content,
+            file.filename,
+            file_ext,
+            file_hash,
+            processing_mode
         )
+        
+        return {
+            "success": True,
+            "message": "Document upload started. Use the upload_id to track progress.",
+            "upload_id": upload_id,
+            "filename": file.filename
+        }
     
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error starting upload: {str(e)}")
 
 
 @app.post("/query", response_model=QueryResponse, tags=["Query"])
@@ -441,7 +790,8 @@ async def query_documents(
             answer_type=request_data.answer_type.value if hasattr(request_data.answer_type, 'value') else request_data.answer_type,
             filters=request_data.filters,
             session_id=request_data.session_id,
-            user_id=current_user.username
+            user_id=current_user.username,
+            return_structured=request_data.return_structured
         )
         return QueryResponse(**result)
     except Exception as e:
@@ -467,6 +817,23 @@ async def list_documents(current_user = Depends(get_current_admin_user)):
         return [DocumentInfo(**doc) for doc in documents]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error listing documents: {str(e)}")
+
+
+@app.get("/filters", tags=["Documents"])
+async def get_available_filters(current_user = Depends(get_current_user)):
+    """
+    Get available filter values from all documents.
+    
+    **🔒 Requires authentication.**
+    
+    Returns unique values for each filterable field (control_owner, priority, compliance_tags, etc.)
+    to populate filter dropdowns in the UI.
+    """
+    try:
+        filters = vector_store.get_available_filters()
+        return filters
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting available filters: {str(e)}")
 
 
 @app.get("/documents/{document_id}/chunks", response_model=list[DocumentChunk], tags=["Documents"])
@@ -528,6 +895,119 @@ async def delete_document(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
+
+
+@app.put("/documents/{document_id}", tags=["Documents"])
+async def update_document(
+    background_tasks: BackgroundTasks,
+    document_id: str,
+    file: UploadFile = File(...),
+    processing_mode: str = Form("auto"),
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Update/replace an existing document with a new file.
+    
+    **🔒 Requires ADMIN role - Only admins can update documents.**
+    
+    - **document_id**: ID of the document to update
+    - **file**: New PDF, TXT, JSON, or CSV file to replace the existing document (max 50MB)
+    - **processing_mode**: "auto" (detect), "structured" (JSON), "text" (chunking), "hybrid" (both)
+    
+    This will:
+    1. Delete the old document and all its chunks
+    2. Process the new file in the background with progress tracking
+    3. Add new chunks with the same document_id
+    
+    Returns upload ID for tracking progress. Use /upload/progress/{upload_id} to check status.
+    
+    ⚠️ Normal users cannot update documents. Contact an admin for document management.
+    """
+    try:
+        # First check if document exists
+        existing_docs = vector_store.list_documents()
+        doc_exists = any(doc['document_id'] == document_id for doc in existing_docs)
+        
+        if not doc_exists:
+            raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+        
+        # Validate file type
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No filename provided")
+        
+        file_ext = os.path.splitext(file.filename)[1].lower()
+        if file_ext not in ['.pdf', '.txt', '.text', '.json', '.csv']:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {file_ext}. Only PDF, TXT, JSON, and CSV files are supported."
+            )
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Calculate file hash for duplicate detection
+        file_hash = hashlib.sha256(file_content).hexdigest()
+        
+        # Check if this file is a duplicate of a DIFFERENT document
+        existing_doc = vector_store.find_document_by_hash(file_hash)
+        if existing_doc and existing_doc['document_id'] != document_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"This file already exists as a different document. "
+                       f"Document ID: {existing_doc['document_id']}, "
+                       f"Filename: {existing_doc['filename']}, "
+                       f"Chunks: {existing_doc['chunks']}. "
+                       f"Please delete that document first or upload a different file."
+            )
+        
+        # Check file size
+        file_size_mb = len(file_content) / (1024 * 1024)
+        if file_size_mb > settings.max_file_size_mb:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large: {file_size_mb:.2f}MB. Maximum size is {settings.max_file_size_mb}MB."
+            )
+        
+        # Delete old document chunks
+        num_deleted = vector_store.delete_document(document_id)
+        
+        # Generate upload ID for tracking
+        upload_id = f"update_{document_id}_{hashlib.md5(file_content[:1000]).hexdigest()[:8]}"
+        
+        # Initialize progress tracker
+        upload_progress_tracker.start_upload(upload_id, file.filename)
+        upload_progress_tracker.update_progress(
+            upload_id,
+            status="processing",
+            progress=2,
+            message=f"Updating document (deleted {num_deleted} old chunks)..."
+        )
+        
+        # Process update in background WITH the existing document_id
+        background_tasks.add_task(
+            process_update_background,
+            upload_id=upload_id,
+            document_id=document_id,
+            file_content=file_content,
+            filename=file.filename,
+            file_ext=file_ext,
+            file_hash=file_hash,
+            processing_mode=processing_mode
+        )
+        
+        return {
+            "upload_id": upload_id,
+            "filename": file.filename,
+            "document_id": document_id,
+            "message": f"Document update started. Use /upload/progress/{upload_id} to track progress."
+        }
+    
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating document: {str(e)}")
 
 
 @app.get("/stats", tags=["General"])
@@ -726,6 +1206,234 @@ async def get_all_sessions(
         "sessions": sessions,
         "total": len(sessions)
     }
+
+
+# ============================================================================
+# Ticket Endpoints
+# ============================================================================
+
+from pydantic import BaseModel, Field
+from typing import Optional as Opt
+
+class TicketCreate(BaseModel):
+    question: str = Field(..., description="The unanswerable question")
+    session_id: Opt[str] = None
+
+class TicketStatusUpdate(BaseModel):
+    status: str = Field(..., description="New status: open, in_progress, resolved, closed")
+    admin_notes: Opt[str] = None
+
+
+@app.post("/api/tickets", tags=["Tickets"])
+async def create_ticket(
+    ticket_data: TicketCreate,
+    current_user = Depends(get_current_user)
+):
+    """
+    Raise a ticket for an unanswerable query.
+    
+    **\U0001f513 Requires authentication - Any user can raise a ticket.**
+    
+    When the system cannot answer a question, users can raise a ticket
+    so admins can review and upload relevant documents.
+    """
+    ticket = ticket_service.create_ticket(
+        user_id=current_user.username,
+        question=ticket_data.question,
+        session_id=ticket_data.session_id
+    )
+    return ticket
+
+
+@app.get("/api/admin/tickets", tags=["Admin"])
+async def get_tickets(
+    status: str = None,
+    user_id: str = None,
+    limit: int = 100,
+    offset: int = 0,
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Get all tickets (Admin only).
+    
+    **\U0001f512 Requires ADMIN role**
+    
+    Optional filters: status (open, in_progress, resolved, closed), user_id
+    """
+    return ticket_service.get_tickets(
+        status=status,
+        user_id=user_id,
+        limit=limit,
+        offset=offset
+    )
+
+
+@app.put("/api/admin/tickets/{ticket_id}", tags=["Admin"])
+async def update_ticket(
+    ticket_id: str,
+    update_data: TicketStatusUpdate,
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Update ticket status (Admin only).
+    
+    **\U0001f512 Requires ADMIN role**
+    """
+    updated = ticket_service.update_ticket_status(
+        ticket_id=ticket_id,
+        status=update_data.status,
+        admin_notes=update_data.admin_notes
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return {"success": True, "message": "Ticket updated"}
+
+
+@app.get("/api/admin/ticket-stats", tags=["Admin"])
+async def get_ticket_stats(
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Get ticket statistics (Admin only).
+    
+    **\U0001f512 Requires ADMIN role**
+    """
+    return ticket_service.get_ticket_stats()
+
+
+# ============================================================================
+# Territory Management Endpoints
+# ============================================================================
+
+@app.post("/api/admin/territories/import", response_model=TerritoryBulkImportResponse, tags=["Admin"])
+async def import_territories(
+    request: TerritoryBulkImportRequest,
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Import bulk territory data (Admin only).
+
+    **🔒 Requires ADMIN role**
+
+    Example data format:
+    ```json
+    {
+        "clear_existing": false,
+        "data": [
+            {
+                "region": "Eastern Hawks",
+                "city": "GUJRANWALA",
+                "zone": "GREEN_ZONE_1",
+                "territories": ["TERRITORY_1", "TERRITORY_2"]
+            }
+        ]
+    }
+    ```
+    """
+    try:
+        if request.clear_existing:
+            territory_service.clear_all_data()
+
+        stats = territory_service.import_bulk_data([d.dict() for d in request.data])
+
+        return TerritoryBulkImportResponse(
+            success=True,
+            message=f"Import completed successfully",
+            stats=stats
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+@app.get("/api/territories/regions", response_model=List[RegionResponse], tags=["Territories"])
+async def get_regions(
+    current_user = Depends(get_current_user)
+):
+    """
+    Get all regions with city counts.
+
+    **🔓 Requires authentication**
+    """
+    return territory_service.get_all_regions()
+
+
+@app.get("/api/territories/regions/{region_id}/cities", response_model=List[CityResponse], tags=["Territories"])
+async def get_cities_in_region(
+    region_id: int,
+    current_user = Depends(get_current_user)
+):
+    """
+    Get all cities in a region.
+
+    **🔓 Requires authentication**
+    """
+    return territory_service.get_cities_by_region(region_id)
+
+
+@app.get("/api/territories/cities/{city_id}/zones", response_model=List[ZoneResponse], tags=["Territories"])
+async def get_zones_in_city(
+    city_id: int,
+    current_user = Depends(get_current_user)
+):
+    """
+    Get all zones in a city.
+
+    **🔓 Requires authentication**
+    """
+    return territory_service.get_zones_by_city(city_id)
+
+
+@app.get("/api/territories/zones/{zone_id}/territories", response_model=List[TerritoryResponse], tags=["Territories"])
+async def get_territories_in_zone(
+    zone_id: int,
+    current_user = Depends(get_current_user)
+):
+    """
+    Get all territories in a zone.
+
+    **🔓 Requires authentication**
+    """
+    return territory_service.get_territories_by_zone(zone_id)
+
+
+@app.get("/api/territories/hierarchy", tags=["Territories"])
+async def get_territory_hierarchy(
+    current_user = Depends(get_current_user)
+):
+    """
+    Get complete territory hierarchy: regions -> cities -> zones -> territories.
+
+    **🔓 Requires authentication**
+    """
+    return territory_service.get_full_hierarchy()
+
+
+@app.get("/api/territories/search", response_model=List[TerritorySearchResult], tags=["Territories"])
+async def search_territories(
+    q: str,
+    current_user = Depends(get_current_user)
+):
+    """
+    Search for territories, zones, cities, or regions by name.
+
+    **🔓 Requires authentication**
+
+    Example: `/api/territories/search?q=gujran`
+    """
+    return territory_service.search_territories(q)
+
+
+@app.delete("/api/admin/territories/clear", tags=["Admin"])
+async def clear_territory_data(
+    current_user = Depends(get_current_admin_user)
+):
+    """
+    Clear all territory data (Admin only). Use with caution!
+
+    **🔒 Requires ADMIN role**
+    """
+    territory_service.clear_all_data()
+    return {"success": True, "message": "All territory data cleared"}
 
 
 if __name__ == "__main__":

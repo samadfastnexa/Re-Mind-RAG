@@ -3,12 +3,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, type QueryLogEntry, type QueryStatsResponse } from '@/lib/api';
 
+type FilterType = 'all' | 'unanswerable' | 'rated' | 'unrated' | 'recent';
+
 export default function QueryHistory() {
     const [queries, setQueries] = useState<QueryLogEntry[]>([]);
     const [stats, setStats] = useState<QueryStatsResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [filterUser, setFilterUser] = useState('');
+    const [filterType, setFilterType] = useState<FilterType>('all');
     const [selectedQuery, setSelectedQuery] = useState<QueryLogEntry | null>(null);
     const [page, setPage] = useState(0);
     const [total, setTotal] = useState(0);
@@ -20,7 +23,7 @@ export default function QueryHistory() {
             setError(null);
 
             const [logRes, statsRes] = await Promise.all([
-                api.getQueryLog(filterUser || undefined, PAGE_SIZE, page * PAGE_SIZE),
+                api.getQueryLog(filterUser || undefined, PAGE_SIZE * 10, 0), // Load more for client-side filtering
                 api.getQueryStats(),
             ]);
 
@@ -33,13 +36,32 @@ export default function QueryHistory() {
         } finally {
             setLoading(false);
         }
-    }, [filterUser, page]);
+    }, [filterUser]);
 
     useEffect(() => {
         loadData();
     }, [loadData]);
 
-    const totalPages = Math.ceil(total / PAGE_SIZE);
+    // Filter queries based on selected type
+    const filteredQueries = queries.filter(q => {
+        switch (filterType) {
+            case 'unanswerable':
+                return q.answer.toLowerCase().includes("couldn't find an answer") || 
+                       q.answer.toLowerCase().includes("raise a ticket");
+            case 'rated':
+                return q.rating !== null;
+            case 'unrated':
+                return q.rating === null;
+            case 'recent':
+                const oneHourAgo = Date.now() - (60 * 60 * 1000);
+                return new Date(q.timestamp).getTime() > oneHourAgo;
+            default:
+                return true;
+        }
+    });
+
+    const paginatedQueries = filteredQueries.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+    const totalPages = Math.ceil(filteredQueries.length / PAGE_SIZE);
 
     const getRatingStars = (rating: number | null) => {
         if (rating === null) return <span className="text-gray-400 text-xs">No rating</span>;
@@ -74,32 +96,76 @@ export default function QueryHistory() {
 
     return (
         <div className="space-y-6">
-            {/* Stats Cards */}
+            {/* Stats Cards - Now Clickable! */}
             {stats && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="bg-white rounded-xl border border-gray-200 p-4">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                    <button
+                        onClick={() => { setFilterType('all'); setPage(0); }}
+                        className={`bg-white rounded-xl border p-4 text-left transition-all hover:shadow-lg hover:scale-105 ${
+                            filterType === 'all' ? 'ring-2 ring-blue-500 border-blue-300' : 'border-gray-200'
+                        }`}
+                    >
                         <p className="text-xs text-gray-500 uppercase tracking-wide">Total Queries</p>
                         <p className="text-2xl font-bold text-gray-900 mt-1">{stats.total_queries}</p>
-                    </div>
-                    <div className="bg-white rounded-xl border border-gray-200 p-4">
-                        <p className="text-xs text-gray-500 uppercase tracking-wide">Unique Users</p>
-                        <p className="text-2xl font-bold text-gray-900 mt-1">{stats.unique_users}</p>
-                    </div>
-                    <div className="bg-white rounded-xl border border-gray-200 p-4">
-                        <p className="text-xs text-gray-500 uppercase tracking-wide">Avg Rating</p>
+                        <p className="text-xs text-blue-600 mt-1 font-medium">👆 Click to view all</p>
+                    </button>
+                    
+                    <button
+                        onClick={() => { setFilterType('recent'); setPage(0); }}
+                        className={`bg-white rounded-xl border p-4 text-left transition-all hover:shadow-lg hover:scale-105 ${
+                            filterType === 'recent' ? 'ring-2 ring-purple-500 border-purple-300' : 'border-gray-200'
+                        }`}
+                    >
+                        <p className="text-xs text-gray-500 uppercase tracking-wide">🕐 Recent (1h)</p>
+                        <p className="text-2xl font-bold text-gray-900 mt-1">
+                            {queries.filter(q => Date.now() - new Date(q.timestamp).getTime() < 3600000).length}
+                        </p>
+                        <p className="text-xs text-purple-600 mt-1 font-medium">👆 Click to filter</p>
+                    </button>
+
+                    <button
+                        onClick={() => { setFilterType('rated'); setPage(0); }}
+                        className={`bg-white rounded-xl border p-4 text-left transition-all hover:shadow-lg hover:scale-105 ${
+                            filterType === 'rated' ? 'ring-2 ring-yellow-500 border-yellow-300' : 'border-gray-200'
+                        }`}
+                    >
+                        <p className="text-xs text-gray-500 uppercase tracking-wide">⭐ Rated Queries</p>
                         <p className="text-2xl font-bold text-gray-900 mt-1">
                             {stats.avg_rating !== null ? `${stats.avg_rating} ★` : '—'}
                         </p>
                         <p className="text-xs text-gray-400">{stats.rated_queries} rated</p>
-                    </div>
-                    <div className="bg-white rounded-xl border border-gray-200 p-4">
-                        <p className="text-xs text-gray-500 uppercase tracking-wide">Top Answer Type</p>
-                        <p className="text-lg font-bold text-gray-900 mt-1">
-                            {stats.queries_by_type && Object.keys(stats.queries_by_type).length > 0
-                                ? Object.entries(stats.queries_by_type).sort((a, b) => b[1] - a[1])[0][0].replace('_', ' ')
-                                : '—'}
+                    </button>
+                    
+                    <button
+                        onClick={() => { setFilterType('unanswerable'); setPage(0); }}
+                        className={`rounded-xl border p-4 text-left transition-all hover:shadow-lg hover:scale-105 ${
+                            filterType === 'unanswerable' 
+                                ? 'bg-red-100 ring-2 ring-red-500 border-red-400' 
+                                : 'bg-red-50 border-red-200'
+                        }`}
+                    >
+                        <p className="text-xs text-red-600 uppercase tracking-wide font-semibold">⚠️ Unanswerable</p>
+                        <p className="text-2xl font-bold text-red-700 mt-1">{stats.unanswerable_queries || 0}</p>
+                        <p className="text-xs text-red-500">
+                            {stats.total_queries > 0 
+                                ? `${((stats.unanswerable_queries || 0) / stats.total_queries * 100).toFixed(1)}%`
+                                : '0%'}
                         </p>
-                    </div>
+                        <p className="text-xs text-red-600 mt-1 font-medium">👆 View questions</p>
+                    </button>
+                    
+                    <button
+                        onClick={() => { setFilterType('unrated'); setPage(0); }}
+                        className={`bg-white rounded-xl border p-4 text-left transition-all hover:shadow-lg hover:scale-105 ${
+                            filterType === 'unrated' ? 'ring-2 ring-orange-500 border-orange-300' : 'border-gray-200'
+                        }`}
+                    >
+                        <p className="text-xs text-gray-500 uppercase tracking-wide">No Rating</p>
+                        <p className="text-2xl font-bold text-gray-900 mt-1">
+                            {stats.total_queries - stats.rated_queries}
+                        </p>
+                        <p className="text-xs text-orange-600 mt-1 font-medium">👆 Show unrated</p>
+                    </button>
                 </div>
             )}
 
@@ -138,7 +204,25 @@ export default function QueryHistory() {
             )}
 
             {/* Filter bar */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
+                {/* Active filter badge */}
+                {filterType !== 'all' && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm">
+                        <span className="font-medium text-blue-700">
+                            Showing: {filterType === 'unanswerable' ? '⚠️ Unanswerable Queries' : 
+                                     filterType === 'rated' ? '⭐ Rated Queries' :
+                                     filterType === 'unrated' ? '📝 Unrated Queries' :
+                                     filterType === 'recent' ? '🕐 Recent (Last Hour)' : 'All'}
+                        </span>
+                        <button
+                            onClick={() => { setFilterType('all'); setPage(0); }}
+                            className="text-blue-600 hover:text-blue-800 font-semibold"
+                        >
+                            ✕
+                        </button>
+                    </div>
+                )}
+                
                 <div className="flex-1 relative">
                     <input
                         type="text"
@@ -154,7 +238,7 @@ export default function QueryHistory() {
                         onClick={() => { setFilterUser(''); setPage(0); }}
                         className="px-3 py-2 text-sm bg-gray-100 rounded-lg hover:bg-gray-200"
                     >
-                        Clear filter
+                        Clear user filter
                     </button>
                 )}
                 <button
@@ -163,8 +247,8 @@ export default function QueryHistory() {
                 >
                     🔄 Refresh
                 </button>
-                <span className="text-sm text-gray-500">
-                    {total} {total === 1 ? 'query' : 'queries'}
+                <span className="text-sm text-gray-500 font-medium">
+                    {filteredQueries.length} {filteredQueries.length === 1 ? 'query' : 'queries'}
                     {filterUser && ` from "${filterUser}"`}
                 </span>
             </div>
@@ -179,10 +263,20 @@ export default function QueryHistory() {
                 <div className="flex items-center justify-center py-12">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
                 </div>
-            ) : queries.length === 0 ? (
+            ) : filteredQueries.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
-                    <p className="text-lg mb-1">No queries yet</p>
-                    <p className="text-sm">User queries will appear here once they start using the chatbot.</p>
+                    <p className="text-lg mb-1">
+                        {filterType === 'unanswerable' ? '✅ No unanswerable queries found!' :
+                         filterType === 'rated' ? 'No rated queries yet' :
+                         filterType === 'unrated' ? 'All queries have been rated!' :
+                         filterType === 'recent' ? 'No queries in the last hour' :
+                         'No queries yet'}
+                    </p>
+                    <p className="text-sm">
+                        {filterType === 'unanswerable' 
+                            ? 'Great! The system is answering all user questions.' 
+                            : 'User queries will appear here once they start using the chatbot.'}
+                    </p>
                 </div>
             ) : (
                 <>
@@ -201,7 +295,7 @@ export default function QueryHistory() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
-                                {queries.map((q) => (
+                                {paginatedQueries.map((q) => (
                                     <tr key={q.id} className="hover:bg-gray-50 transition-colors">
                                         <td className="px-4 py-3">
                                             <span className="inline-flex items-center gap-1.5">
@@ -211,10 +305,13 @@ export default function QueryHistory() {
                                                 <span className="font-medium text-gray-800">{q.user_id}</span>
                                             </span>
                                         </td>
-                                        <td className="px-4 py-3 max-w-xs">
-                                            <p className="truncate text-gray-800" title={q.question}>
-                                                {q.question}
-                                            </p>
+                                        <td className="px-4 py-3">
+                                            {/* Wrap in explicit-width div so truncate works independently of table layout */}
+                                            <div className="max-w-[260px] overflow-hidden">
+                                                <p className="truncate text-gray-800" title={q.question}>
+                                                    {q.question}
+                                                </p>
+                                            </div>
                                         </td>
                                         <td className="px-4 py-3">{getAnswerTypeBadge(q.answer_type)}</td>
                                         <td className="px-4 py-3 text-gray-600">{q.sources_count}</td>

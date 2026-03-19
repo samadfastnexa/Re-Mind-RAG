@@ -89,6 +89,14 @@ export default function AdminScreen() {
                     <Text style={styles.statNumber}>{stats?.rated_queries || 0}</Text>
                     <Text style={styles.statLabel}>Rated Queries</Text>
                 </View>
+
+                <View style={[styles.statCard, { backgroundColor: '#FECACA', borderColor: '#DC2626', borderWidth: 1.5 }]}>
+                    <Text style={[styles.statNumber, { color: '#B91C1C' }]}>⚠️ {stats?.unanswerable_queries || 0}</Text>
+                    <Text style={[styles.statLabel, { color: '#B91C1C', fontWeight: '600' }]}>Unanswerable</Text>
+                    <Text style={[styles.statLabel, { fontSize: 11 }]}>
+                        {stats?.total_queries ? `${((stats.unanswerable_queries || 0) / stats.total_queries * 100).toFixed(1)}%` : '0%'}
+                    </Text>
+                </View>
             </View>
 
             {/* Admin Actions */}

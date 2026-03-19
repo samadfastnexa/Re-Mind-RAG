@@ -1,0 +1,91 @@
+[
+  {
+    "region": "Eastern Hawks",
+    "city": "GUJRANWALA",
+    "zone": "GREEN_ZONE_1",
+    "territories": [
+      "GHAKHAR",
+      "EMINABAD",
+      "WAZEERABAD",
+      "ALI PUR CHATHA",
+      "KAMOKE"
+    ]
+  },
+  {
+    "region": "Eastern Hawks",
+    "city": "SARGODHA",
+    "zone": "GREEN_ZONE_2",
+    "territories": [
+      "BHALWAL",
+      "SILANWALI",
+      "BHERA",
+      "SAHIWAL",
+      "KOT MOMIN"
+    ]
+  },
+  {
+    "region": "Eastern Hawks",
+    "city": "MIANWALI",
+    "zone": "WHITE_ZONE_1",
+    "territories": [
+      "ISA KHEL",
+      "PIPLAN"
+    ]
+  },
+  {
+    "region": "Northern Eagles",
+    "city": "FAISALABAD",
+    "zone": "GREEN_ZONE_1",
+    "territories": [
+      "SAMUNDARI",
+      "TANDLIAN WALA",
+      "JARANWALA",
+      "CHAK JHUMRA"
+    ]
+  },
+  {
+    "region": "Northern Eagles",
+    "city": "KASUR",
+    "zone": "GREEN_ZONE_2",
+    "territories": [
+      "PATTOKI",
+      "CHUNIAN"
+    ]
+  },
+  {
+    "region": "Northern Eagles",
+    "city": "OKARA",
+    "zone": "WHITE_ZONE_1",
+    "territories": [
+      "RENALA KHURD",
+      "DEPALPUR"
+    ]
+  },
+  {
+    "region": "Central Tigers",
+    "city": "ARIF WALA",
+    "zone": "GREEN_ZONE_1",
+    "territories": [
+      "PAKPATTAN"
+    ]
+  },
+  {
+    "region": "Central Tigers",
+    "city": "BAHAWALNAGAR",
+    "zone": "GREEN_ZONE_2",
+    "territories": [
+      "FORT ABBAS",
+      "HAROONABAD",
+      "CHISHTIAN"
+    ]
+  },
+  {
+    "region": "Central Tigers",
+    "city": "VEHARI",
+    "zone": "WHITE_ZONE_1",
+    "territories": [
+      "BUREWALA",
+      "MAILSI"
+    ]
+  }
+]

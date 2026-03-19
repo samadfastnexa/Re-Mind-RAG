@@ -16,8 +16,8 @@ SECRET_KEY = "your-secret-key-change-in-production"  # TODO: Move to .env
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing — rounds=10 matches auth_utils.py for consistent performance
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=10)
 
 # HTTP Bearer token scheme
 security = HTTPBearer()

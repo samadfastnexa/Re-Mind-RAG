@@ -2,7 +2,7 @@
 Pydantic models for request/response validation.
 """
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
 
@@ -27,13 +27,32 @@ class DocumentUploadResponse(BaseModel):
     chunks: int
 
 
+class UploadProgress(BaseModel):
+    """Progress information for document upload."""
+    status: str = Field(..., description="Status: uploading, processing, vectorizing, completed, failed")
+    progress: float = Field(..., ge=0, le=100, description="Progress percentage (0-100)")
+    message: str = Field(..., description="Current progress message")
+    document_id: Optional[str] = None
+    filename: Optional[str] = None
+    pages: Optional[int] = None
+    chunks: Optional[int] = None
+    error: Optional[str] = None
+
+
 class QueryRequest(BaseModel):
     """Request model for querying documents with advanced features."""
     question: str = Field(..., min_length=1, description="Question to ask about the documents")
     top_k: int = Field(default=6, ge=1, le=20, description="Number of relevant chunks to retrieve")
     answer_type: AnswerType = Field(default=AnswerType.default, description="Type of answer to generate")
-    filters: Optional[Dict[str, str]] = Field(default=None, description="Metadata filters (e.g., {'document_id': 'doc_123'})")
+    filters: Optional[Dict[str, Any]] = Field(
+        default=None, 
+        description="Metadata filters for structured data (e.g., {'control_owner': 'CTO', 'section_id': '9.2'})"
+    )
     session_id: Optional[str] = Field(default=None, description="Conversation session ID for follow-up questions")
+    return_structured: bool = Field(
+        default=True, 
+        description="Return structured data from JSON chunks if available"
+    )
     
     class Config:
         json_schema_extra = {
@@ -58,6 +77,12 @@ class SourceInfo(BaseModel):
     content: str = Field(..., description="Preview of chunk content")
     relevance_score: float = Field(..., description="Relevance score (0-1)")
     chunk_length: int = Field(..., description="Length of chunk in characters")
+    # Optional location metadata — present when available
+    page: Optional[int] = Field(None, description="Single page number")
+    page_range: Optional[str] = Field(None, description="Page range, e.g. '52-53'")
+    pages: Optional[List[int]] = Field(None, description="List of pages covered by the chunk")
+    section_id: Optional[str] = Field(None, description="Section number, e.g. '10.3.1'")
+    has_table: Optional[bool] = Field(None, description="Chunk contains a table")
 
 
 class RetrievalMetadata(BaseModel):
@@ -69,12 +94,17 @@ class RetrievalMetadata(BaseModel):
 
 
 class QueryResponse(BaseModel):
+    structured_data: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Structured JSON data from matching chunks (if available)"
+    )
     """Enhanced response model for query results."""
     question: str
     answer: str
     sources: List[SourceInfo]
     answer_type: str = "default"
     retrieval_metadata: Optional[RetrievalMetadata] = None
+    unanswerable: bool = False
     
     class Config:
         json_schema_extra = {
@@ -186,3 +216,66 @@ class HealthResponse(BaseModel):
     version: str
     chromadb_status: str
     openai_configured: bool
+
+
+# Territory Management Models
+class TerritoryData(BaseModel):
+    """Single territory data entry for bulk import."""
+    region: str
+    city: str
+    zone: str
+    territories: List[str]
+
+
+class TerritoryBulkImportRequest(BaseModel):
+    """Bulk import request for territories."""
+    data: List[TerritoryData]
+    clear_existing: bool = Field(default=False, description="Clear existing data before import")
+
+
+class TerritoryBulkImportResponse(BaseModel):
+    """Response for bulk territory import."""
+    success: bool
+    message: str
+    stats: Dict[str, int]
+
+
+class RegionResponse(BaseModel):
+    """Response model for region data."""
+    id: int
+    name: str
+    created_at: str
+    city_count: Optional[int] = None
+
+
+class CityResponse(BaseModel):
+    """Response model for city data."""
+    id: int
+    name: str
+    created_at: str
+    zone_count: Optional[int] = None
+
+
+class ZoneResponse(BaseModel):
+    """Response model for zone data."""
+    id: int
+    name: str
+    color: Optional[str]
+    created_at: str
+    territory_count: Optional[int] = None
+
+
+class TerritoryResponse(BaseModel):
+    """Response model for territory data."""
+    id: int
+    name: str
+    created_at: str
+
+
+class TerritorySearchResult(BaseModel):
+    """Search result for territories."""
+    territory_name: str
+    zone_name: str
+    zone_color: Optional[str]
+    city_name: str
+    region_name: str

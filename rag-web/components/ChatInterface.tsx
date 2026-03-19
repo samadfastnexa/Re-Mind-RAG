@@ -1,21 +1,26 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { api, type QueryResponse, type User } from '@/lib/api';
+import { api, auth, type QueryResponse, type User } from '@/lib/api';
 import jsPDF from 'jspdf';
+import FilterPanel from './FilterPanel';
 
 interface Message {
     id: string;
     type: 'user' | 'assistant';
     content: string;
     sources?: QueryResponse['sources'];
+    structured_data?: Array<Record<string, any>>;
     answerType?: string;
     retrievalMetadata?: any;
     timestamp: Date;
     rating?: number;
     responseTime?: number;
+    unanswerable?: boolean;
+    ticketRaised?: boolean;
 }
 
 interface ConversationStorage {
@@ -37,6 +42,7 @@ export default function ChatInterface() {
     const [sessionId, setSessionId] = useState<string | null>(null);
     const [showHistory, setShowHistory] = useState(false);
     const [topK] = useState(8);
+    const [activeFilters, setActiveFilters] = useState<Record<string, any>>({});
     const [expandedSources, setExpandedSources] = useState<Record<string, boolean>>({});
     const [copiedId, setCopiedId] = useState<string | null>(null);
     const [conversations, setConversations] = useState<ConversationStorage[]>([]);
@@ -120,7 +126,7 @@ export default function ChatInterface() {
     const deleteConversation = useCallback((convSessionId: string) => {
         // Check if user has permission to delete
         if (!currentUser?.can_delete_history) {
-            alert('You do not have permission to delete conversation history.');
+            toast.error('You do not have permission to delete conversation history.');
             return;
         }
         
@@ -139,6 +145,7 @@ export default function ChatInterface() {
                 await api.clearConversationSession(sessionId);
             } catch (error) {
                 console.error('Failed to clear session:', error);
+                // Continue anyway - clear local state
             }
         }
         setMessages([]);
@@ -154,11 +161,15 @@ export default function ChatInterface() {
     // Fetch current user
     useEffect(() => {
         const fetchUser = async () => {
+            if (!auth.isAuthenticated()) {
+                return;
+            }
             try {
                 const user = await api.getCurrentUser();
                 setCurrentUser(user);
             } catch (error) {
                 console.error('Failed to fetch current user:', error);
+                // Don't throw - parent component handles auth
             }
         };
         fetchUser();
@@ -216,6 +227,8 @@ export default function ChatInterface() {
                 question: input,
                 top_k: topK,
                 answer_type: 'default',
+                filters: Object.keys(activeFilters).length > 0 ? activeFilters : undefined,
+                return_structured: true,
                 session_id: sessionId || undefined
             });
 
@@ -224,10 +237,12 @@ export default function ChatInterface() {
                 type: 'assistant',
                 content: response.answer,
                 sources: response.sources,
+                structured_data: response.structured_data,
                 answerType: response.answer_type,
                 retrievalMetadata: response.retrieval_metadata,
                 timestamp: new Date(),
                 responseTime: ((Date.now() - startTime) / 1000),
+                unanswerable: response.unanswerable || false,
             };
 
             setMessages((prev) => [...prev, assistantMessage]);
@@ -269,11 +284,12 @@ export default function ChatInterface() {
 
     const exportConversation = () => {
         if (!currentUser?.can_export) {
-            alert('You do not have permission to export conversations');
+            toast.error('You do not have permission to export conversations');
             return;
         }
 
-        const doc = new jsPDF();
+        try {
+            const doc = new jsPDF();
         const pageWidth = doc.internal.pageSize.getWidth();
         const pageHeight = doc.internal.pageSize.getHeight();
         const margin = 15;
@@ -342,6 +358,11 @@ export default function ChatInterface() {
 
         // Save PDF
         doc.save(`conversation-${sessionId || 'export'}-${Date.now()}.pdf`);
+        toast.success('Conversation exported successfully');
+        } catch (error) {
+            console.error('Export failed:', error);
+            toast.error('Failed to export conversation. Please try again.');
+        }
     };
 
     return (
@@ -519,22 +540,160 @@ export default function ChatInterface() {
                                 <div className="mt-3">
                                     <button
                                         onClick={() => toggleSources(message.id)}
-                                        className="flex items-center gap-1 text-xs font-semibold text-gray-600 hover:text-gray-800 transition-colors"
+                                        className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 hover:text-gray-800 transition-colors"
                                     >
-                                        <span className={`transform transition-transform ${expandedSources[message.id] ? 'rotate-90' : ''}`}>▶</span>
+                                        <span className={`transform transition-transform text-[10px] ${expandedSources[message.id] ? 'rotate-90' : ''}`}>▶</span>
                                         📚 Sources ({message.sources.length})
                                     </button>
                                     {expandedSources[message.id] && (
                                         <div className="mt-2 space-y-2">
-                                            {message.sources.map((source, idx) => (
-                                                <div key={idx} className="text-xs bg-gray-50 p-2.5 rounded-lg border border-gray-100">
-                                                    <p className="text-gray-600 italic leading-relaxed border-l-2 border-orange-300 pl-2">
-                                                        &ldquo;{source.content}&rdquo;
-                                                    </p>
+                                            {message.sources.map((source, idx) => {
+                                                const isExpanded = expandedSources[`${message.id}_src_${idx}`];
+                                                const docName = (source.document || '').split(/[\\/]/).pop() || source.document || 'Unknown Document';
+                                                const relevance = Math.round((source.relevance_score || 0) * 100);
+                                                const relevanceColor = relevance >= 70
+                                                    ? 'bg-green-100 text-green-700'
+                                                    : relevance >= 40
+                                                        ? 'bg-yellow-100 text-yellow-700'
+                                                        : 'bg-red-50 text-red-600';
+                                                const contentPreview = source.content.length > 250
+                                                    ? source.content.slice(0, 250) + '…'
+                                                    : source.content;
+                                                return (
+                                                    <div key={idx} className="text-xs rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+                                                        {/* Source header */}
+                                                        <div className="flex items-center justify-between px-2.5 py-1.5 bg-white border-b border-gray-100">
+                                                            <div className="flex items-center gap-2 min-w-0">
+                                                                <span className="shrink-0 px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded font-bold text-[10px]">
+                                                                    #{idx + 1}
+                                                                </span>
+                                                                <span className="truncate font-semibold text-gray-800 max-w-[200px]" title={docName}>
+                                                                    {docName}
+                                                                </span>
+                                                            </div>
+                                                            <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                                                                {relevance > 0 && (
+                                                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${relevanceColor}`}>
+                                                                        {relevance}% match
+                                                                    </span>
+                                                                )}
+                                                                {source.total_chunks > 0 && (
+                                                                    <span className="text-gray-400 text-[10px] whitespace-nowrap">
+                                                                        chunk {source.chunk}/{source.total_chunks}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                        {/* Location row: section + page */}
+                                                        {(source.section_id || source.page || source.page_range) && (
+                                                            <div className="flex items-center gap-2 px-2.5 py-1 bg-orange-50 border-b border-orange-100">
+                                                                {source.section_id && (
+                                                                    <span className="flex items-center gap-1 text-orange-700 font-semibold text-[10px]">
+                                                                        § {source.section_id}
+                                                                    </span>
+                                                                )}
+                                                                {(source.page || source.page_range) && (
+                                                                    <span className="flex items-center gap-1 text-gray-500 text-[10px]">
+                                                                        📄 p.{source.page_range ?? source.page}
+                                                                    </span>
+                                                                )}
+                                                                {source.has_table && (
+                                                                    <span className="text-blue-600 text-[10px] font-medium">📊 contains table</span>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                        {/* Source content */}
+                                                        <div className="p-2.5 bg-gray-50">
+                                                            <p className="text-gray-600 leading-relaxed border-l-2 border-orange-300 pl-2 italic whitespace-pre-wrap">
+                                                                &ldquo;{isExpanded ? source.content : contentPreview}&rdquo;
+                                                            </p>
+                                                            {source.content.length > 250 && (
+                                                                <button
+                                                                    onClick={() => setExpandedSources(prev => ({
+                                                                        ...prev,
+                                                                        [`${message.id}_src_${idx}`]: !prev[`${message.id}_src_${idx}`],
+                                                                    }))}
+                                                                    className="mt-1.5 text-orange-600 hover:text-orange-800 text-[10px] font-semibold"
+                                                                >
+                                                                    {isExpanded ? '▲ Show less' : '▼ Show more'}
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                            {/* Structured Data Display */}
+                            {message.structured_data && message.structured_data.length > 0 && (
+                                <div className="mt-3">
+                                    <button
+                                        onClick={() => setExpandedSources(prev => ({...prev, [`${message.id}_structured`]: !prev[`${message.id}_structured`]}))}
+                                        className="flex items-center gap-1 text-xs font-semibold text-gray-600 hover:text-gray-800 transition-colors"
+                                    >
+                                        <span className={`transform transition-transform ${expandedSources[`${message.id}_structured`] ? 'rotate-90' : ''}`}>▶</span>
+                                        📊 Structured Data ({message.structured_data.length} items)
+                                    </button>
+                                    {expandedSources[`${message.id}_structured`] && (
+                                        <div className="mt-2 space-y-2">
+                                            {message.structured_data.map((item, idx) => (
+                                                <div key={idx} className="text-xs bg-gradient-to-r from-blue-50 to-purple-50 p-3 rounded-lg border border-blue-200">
+                                                    <div className="space-y-1">
+                                                        {Object.entries(item).map(([key, value]) => (
+                                                            <div key={key} className="flex gap-2">
+                                                                <span className="font-semibold text-blue-700 min-w-[120px]">{key}:</span>
+                                                                <span className="text-gray-700 flex-1">{typeof value === 'object' ? JSON.stringify(value) : String(value)}</span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
                                                 </div>
                                             ))}
                                         </div>
                                     )}
+                                </div>
+                            )}
+                            {/* Ticket prompt for unanswerable queries */}
+                            {message.type === 'assistant' && message.unanswerable && !message.ticketRaised && (
+                                <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                                    <p className="text-sm font-medium text-amber-800 mb-2">🎫 Would you like to raise a ticket?</p>
+                                    <p className="text-xs text-amber-600 mb-3">Our team will review your question and upload relevant documents.</p>
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={async () => {
+                                                try {
+                                                    const userMsg = messages[messages.findIndex(m => m.id === message.id) - 1];
+                                                    await api.createTicket(userMsg?.content || message.content, sessionId || undefined);
+                                                    setMessages(prev => prev.map(m =>
+                                                        m.id === message.id ? { ...m, ticketRaised: true, content: m.content + '\n\n✅ **Ticket raised successfully!** Our team will look into this.' } : m
+                                                    ));
+                                                } catch (err) {
+                                                    console.error('Failed to create ticket:', err);
+                                                }
+                                            }}
+                                            className="px-4 py-1.5 text-sm font-medium bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition shadow-sm"
+                                        >
+                                            ✅ Yes
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                setMessages(prev => prev.map(m =>
+                                                    m.id === message.id ? { ...m, ticketRaised: true } : m
+                                                ));
+                                            }}
+                                            className="px-4 py-1.5 text-sm font-medium bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition"
+                                        >
+                                            ❌ No
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Ticket raised confirmation */}
+                            {message.type === 'assistant' && message.unanswerable && message.ticketRaised && (
+                                <div className="mt-2">
+                                    <span className="text-xs text-green-600 font-medium">🎫 Ticket handled</span>
                                 </div>
                             )}
 
@@ -597,6 +756,40 @@ export default function ChatInterface() {
                 )}
 
                 <div ref={messagesEndRef} />
+            </div>
+
+            {/* FilterPanel */}
+            <div className="border-t p-2 bg-gray-50">
+                <FilterPanel 
+                    onFiltersChange={setActiveFilters}
+                    activeFilters={activeFilters}
+                />
+                
+                {/* Active Filter Badges */}
+                {Object.keys(activeFilters).length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                        <span className="text-xs font-medium text-gray-600">Active Filters:</span>
+                        {Object.entries(activeFilters).map(([key, value]) => (
+                            <span 
+                                key={key}
+                                className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded-full flex items-center gap-1"
+                            >
+                                <strong>{key}:</strong>
+                                {Array.isArray(value) ? value.join(', ') : String(value)}
+                                <button
+                                    onClick={() => {
+                                        const newFilters = { ...activeFilters };
+                                        delete newFilters[key];
+                                        setActiveFilters(newFilters);
+                                    }}
+                                    className="ml-1 hover:text-blue-900"
+                                >
+                                    ×
+                                </button>
+                            </span>
+                        ))}
+                    </div>
+                )}
             </div>
 
             {/* Input */}

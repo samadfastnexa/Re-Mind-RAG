@@ -2,10 +2,12 @@ import { StyleSheet, View, Text, FlatList, TouchableOpacity, Alert } from 'react
 import { useState, useEffect } from 'react';
 import { useRouter } from 'expo-router';
 import { ragApi, type Document } from '../services/api';
+import * as DocumentPicker from 'expo-document-picker';
 
 export default function DocumentsScreen() {
     const [documents, setDocuments] = useState<Document[]>([]);
     const [loading, setLoading] = useState(true);
+    const [updating, setUpdating] = useState<string | null>(null);
     const router = useRouter();
 
     const loadDocuments = async () => {
@@ -47,6 +49,48 @@ export default function DocumentsScreen() {
         );
     };
 
+    const handleUpdate = async (doc: Document) => {
+        try {
+            // Pick a new document
+            const result = await DocumentPicker.getDocumentAsync({
+                type: ['application/pdf', 'text/plain'],
+                copyToCacheDirectory: true
+            });
+
+            if (result.canceled || !result.assets?.[0]) {
+                return;
+            }
+
+            const file = result.assets[0];
+
+            // Confirm update
+            Alert.alert(
+                'Update Document',
+                `Replace "${doc.filename}" with "${file.name}"?\n\nThis will replace all ${doc.chunks} existing chunks.`,
+                [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                        text: 'Update',
+                        onPress: async () => {
+                            try {
+                                setUpdating(doc.document_id);
+                                await ragApi.updateDocument(doc.document_id, file.uri, file.name);
+                                await loadDocuments();
+                                Alert.alert('Success', 'Document updated successfully!');
+                            } catch (error) {
+                                Alert.alert('Error', 'Failed to update document');
+                            } finally {
+                                setUpdating(null);
+                            }
+                        },
+                    },
+                ]
+            );
+        } catch (error) {
+            Alert.alert('Error', 'Failed to pick document');
+        }
+    };
+
     if (loading) {
         return (
             <View style={styles.centerContainer}>
@@ -86,8 +130,18 @@ export default function DocumentsScreen() {
                                 <Text style={styles.viewButtonText}>👁️</Text>
                             </TouchableOpacity>
                             <TouchableOpacity
-                                style={styles.deleteButton}
+                                style={[styles.updateButton, updating === item.document_id && styles.disabledButton]}
+                                onPress={() => handleUpdate(item)}
+                                disabled={updating === item.document_id}
+                            >
+                                <Text style={styles.updateButtonText}>
+                                    {updating === item.document_id ? '⏳' : '🔄'}
+                                </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.deleteButton, updating === item.document_id && styles.disabledButton]}
                                 onPress={() => handleDelete(item)}
+                                disabled={updating === item.document_id}
                             >
                                 <Text style={styles.deleteButtonText}>🗑️</Text>
                             </TouchableOpacity>
@@ -173,10 +227,24 @@ const styles = StyleSheet.create({
     viewButtonText: {
         fontSize: 20,
     },
+    updateButton: {
+        backgroundColor: '#D1FAE5',
+        borderRadius: 8,
+        width: 40,
+        height: 40,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    updateButtonText: {
+        fontSize: 20,
+    },
     deleteButton: {
         padding: 8,
     },
     deleteButtonText: {
         fontSize: 24,
+    },
+    disabledButton: {
+        opacity: 0.5,
     },
 });

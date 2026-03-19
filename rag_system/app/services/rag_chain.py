@@ -2,6 +2,7 @@
 RAG chain implementation using LangChain with OpenAI or Ollama.
 Enhanced with hybrid search, reranking, query caching, and multiple answer types.
 """
+import json
 from typing import Dict, List, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
@@ -57,11 +58,20 @@ class RAGChain:
 
 RULES:
 1. Answer ONLY from the context — no external knowledge or assumptions
-2. If the answer IS in the context, give a clear, complete, well-structured response
-3. If the answer is NOT in the context, say: "I cannot answer this question based on the provided documents."
-4. Interpret the user's intent even if there are typos or unclear phrasing
-5. Be thorough — include all relevant details from the context
-6. Never contradict the source material
+2. **Resolve synonyms and related terms** — the user's question may use different words than the document. For example:
+   - "theft policy" → look for "loss or theft", "stolen device", "missing equipment", "report theft"
+   - "password rules" → look for "password policy", "credentials", "authentication requirements"
+   - "leave policy" → look for "annual leave", "vacation", "time off", "absence"
+   Always scan the ENTIRE context for semantically related information before deciding.
+3. If the answer IS in the context (even if phrased differently), give a clear, complete, well-structured response — **do NOT say "not explicitly mentioned" if you are about to provide relevant information**
+4. **If a term is mentioned but not fully defined**, provide whatever contextual information IS available
+5. **ONLY if the topic and all related synonyms are completely absent** from every source in the context, respond with exactly: "I'm sorry, I couldn't find an answer to your question. Would you like to raise a ticket so our team can help?"
+   - IMPORTANT: Do NOT use this fallback if you found any related procedure or section — always present related content as the answer instead
+6. Be thorough — include all relevant details, procedures, and requirements from the context
+7. Never contradict the source material or add external knowledge
+8. **Always cite the section or procedure number** when available (e.g., "According to Procedure #6.7.13..." or "Section 6.2 states...")
+9. When context contains tables, mention that data is from a table
+10. When context notes images, mention that supporting visuals are available
 
 FORMATTING:
 - **Bold** key terms and important concepts
@@ -69,6 +79,7 @@ FORMATTING:
 - Use ### headings for longer answers with multiple topics
 - Use `code formatting` for file names, commands, technical terms
 - Use > blockquotes for direct quotes from documents
+- **Include section/page citations** in your answer (e.g., "Section 6.2", "Procedure #6.7.13", "page 5")
 - Keep short answers concise; expand only when the context is rich
 
 {conversation_context}
@@ -76,7 +87,7 @@ FORMATTING:
 CONTEXT FROM DOCUMENTS:
 {context}
 
-Answer the question below accurately and completely using ONLY the context above."""),
+Answer the question below accurately and completely using ONLY the context above. Remember to cite section numbers and procedures."""),
             ("human", "{question}")
         ])
     
@@ -224,7 +235,7 @@ CONTEXT:
     def format_context(self, search_results: List[Dict]) -> str:
         """
         Format search results into context string with enhanced source information.
-        Cleans and deduplicates content.
+        Includes tables, images, and page numbers. Cleans and deduplicates content.
         
         Args:
             search_results: List of search results from vector store
@@ -253,6 +264,27 @@ CONTEXT:
             chunk_index = metadata.get('chunk_index', 0)
             position = metadata.get('position_percent', 0)
             
+            # Get page information
+            page_info = ""
+            if metadata.get('page'):
+                page_info = f", Page {metadata['page']}"
+            elif metadata.get('page_range'):
+                page_info = f", Pages {metadata['page_range']}"
+            elif metadata.get('pages'):
+                # Deserialize pages from JSON if it's a string
+                pages = metadata.get('pages')
+                if isinstance(pages, str):
+                    try:
+                        pages = json.loads(pages)
+                    except (json.JSONDecodeError, TypeError):
+                        pages = None
+                
+                if isinstance(pages, list) and pages:
+                    if len(pages) == 1:
+                        page_info = f", Page {pages[0]}"
+                    else:
+                        page_info = f", Pages {min(pages)}-{max(pages)}"
+            
             # Include score information for transparency
             score_info = ""
             if result.get('reranker_score'):
@@ -260,11 +292,64 @@ CONTEXT:
             elif result.get('hybrid_score'):
                 score_info = f" [Hybrid Score: {result['hybrid_score']:.2f}]"
             
+            # Build context entry with enhanced metadata
+            source_header = f"[Source {len(context_parts) + 1}: {filename}{page_info}, Section {chunk_index + 1} ({position:.0f}% through document){score_info}]"
+            
+            # Add table information if present
+            table_note = ""
+            if metadata.get('has_table'):
+                table_note = "\n**[NOTE: This section contains a table]**"
+            
+            # Add image information if present
+            image_note = ""
+            if metadata.get('has_images'):
+                # Deserialize related_images from JSON
+                related_images = metadata.get('related_images', '[]')
+                if isinstance(related_images, str):
+                    try:
+                        related_images = json.loads(related_images)
+                    except (json.JSONDecodeError, TypeError):
+                        related_images = []
+                num_images = len(related_images)
+                image_note = f"\n**[NOTE: This section contains {num_images} image(s)]**"
+            
             context_parts.append(
-                f"[Source {len(context_parts) + 1}: {filename}, Section {chunk_index + 1} ({position:.0f}% through document){score_info}]\n{content}\n"
+                f"{source_header}{table_note}{image_note}\n{content}\n"
             )
         
         return "\n---\n".join(context_parts)
+    
+    def extract_structured_data(self, search_results: List[Dict]) -> List[Dict]:
+        """
+        Extract structured JSON data from search results.
+        
+        Args:
+            search_results: List of search results
+            
+        Returns:
+            List of structured JSON objects from chunks marked as structured
+        """
+        structured_data = []
+        
+        for result in search_results:
+            metadata = result.get('metadata', {})
+            
+            # Check if this is a structured chunk
+            if metadata.get('chunk_type') == 'structured':
+                # Extract the structured data JSON
+                structured_json = metadata.get('structured_data')
+                if structured_json:
+                    try:
+                        if isinstance(structured_json, str):
+                            data = json.loads(structured_json)
+                        else:
+                            data = structured_json
+                        structured_data.append(data)
+                    except (json.JSONDecodeError, TypeError) as e:
+                        print(f"Warning: Could not parse structured data: {e}")
+                        continue
+        
+        return structured_data
     
     def format_sources(self, search_results: List[Dict]) -> List[Dict]:
         """
@@ -308,7 +393,8 @@ CONTEXT:
             if len(content_preview) > 300:
                 content_preview = content_preview[:300] + "..."
             
-            sources.append({
+            # Build source information with enhanced metadata
+            source_info = {
                 "source_id": len(sources) + 1,  # Renumber after deduplication
                 "document_id": metadata.get('document_id', 'unknown'),
                 "document": metadata.get('filename', 'Unknown'),
@@ -318,7 +404,43 @@ CONTEXT:
                 "content": content_preview,
                 "relevance_score": round(relevance_score, 4),
                 "chunk_length": len(content)
-            })
+            }
+            # Propagate section / page info
+            if metadata.get('section_id'):
+                source_info['section_id'] = metadata['section_id']
+            if metadata.get('has_table'):
+                source_info['has_table'] = True
+            
+            # Add page information
+            if metadata.get('page'):
+                source_info['page'] = metadata['page']
+            elif metadata.get('page_range'):
+                source_info['page_range'] = metadata['page_range']
+            elif metadata.get('pages'):
+                # Deserialize pages from JSON if it's a string
+                pages = metadata.get('pages')
+                if isinstance(pages, str):
+                    try:
+                        pages = json.loads(pages)
+                    except (json.JSONDecodeError, TypeError):
+                        pages = None
+                
+                if isinstance(pages, list):
+                    source_info['pages'] = pages
+            
+            # Add table information
+            if metadata.get('has_table'):
+                source_info['has_table'] = True
+                if metadata.get('table_data'):
+                    source_info['table_data'] = metadata['table_data']
+            
+            # Add image information
+            if metadata.get('has_images'):
+                source_info['has_images'] = True
+                if metadata.get('related_images'):
+                    source_info['related_images'] = metadata['related_images']
+            
+            sources.append(source_info)
         
         return sources
     
@@ -329,7 +451,8 @@ CONTEXT:
         answer_type: str = "default",
         filters: Optional[Dict] = None,
         session_id: Optional[str] = None,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        return_structured: bool = True
     ) -> Dict:
         """
         Query the RAG system with advanced features.
@@ -380,9 +503,10 @@ CONTEXT:
         if not search_results:
             no_docs_response = {
                 "question": question,
-                "answer": "I don't have any documents to answer this question. Please upload some documents first.",
+                "answer": "I'm sorry, I couldn't find an answer to your question. Would you like to raise a ticket so our team can help?",
                 "sources": [],
-                "answer_type": answer_type
+                "answer_type": answer_type,
+                "unanswerable": True
             }
             
             # Add to conversation history if session provided
@@ -394,9 +518,9 @@ CONTEXT:
         
         # Apply reranking if enabled
         if settings.enable_reranking and self.reranker:
-            search_results = self.reranker.rerank(question, search_results, top_k=top_k)
+            search_results = self.reranker.rerank(question, search_results, top_k=settings.reranker_top_k)
         else:
-            search_results = search_results[:top_k]
+            search_results = search_results[:settings.reranker_top_k]
         
         # Format context
         context = self.format_context(search_results)
@@ -419,15 +543,26 @@ CONTEXT:
         # Get answer
         answer = chain.invoke(question)
         
+        # Check if the answer indicates it couldn't be answered
+        unanswerable = "couldn't find an answer" in answer.lower() or "cannot answer this question" in answer.lower() or "raise a ticket" in answer.lower()
+        
         # Format sources with enhanced metadata
         sources = self.format_sources(search_results)
+        
+        # Extract structured data if requested
+        structured_data = None
+        if return_structured:
+            structured_data = self.extract_structured_data(search_results)
+            if not structured_data:
+                structured_data = None  # Return null instead of empty list
         
         retrieval_metadata = {
             "total_sources": len(sources),
             "hybrid_search_used": settings.enable_hybrid_search,
             "reranking_used": settings.enable_reranking,
             "filters_applied": filters is not None,
-            "cache_hit": False
+            "cache_hit": False,
+            "structured_data_found": structured_data is not None
         }
         
         response = {
@@ -435,17 +570,20 @@ CONTEXT:
             "answer": answer,
             "sources": sources,
             "answer_type": answer_type,
-            "retrieval_metadata": retrieval_metadata
+            "retrieval_metadata": retrieval_metadata,
+            "unanswerable": unanswerable,
+            "structured_data": structured_data
         }
         
-        # ─── Store in cache for future lookups ────────────────────
-        query_cache.put(
-            question=question,
-            answer=answer,
-            sources=sources,
-            answer_type=answer_type,
-            metadata=retrieval_metadata
-        )
+        # ─── Store in cache only for answerable responses ─────────────
+        if not unanswerable:
+            query_cache.put(
+                question=question,
+                answer=answer,
+                sources=sources,
+                answer_type=answer_type,
+                metadata=retrieval_metadata
+            )
         
         # Add to conversation history if session provided
         if session_id and settings.enable_conversation_history:
@@ -459,7 +597,7 @@ CONTEXT:
                 session_id, 
                 "assistant", 
                 answer,
-                metadata={"sources": sources, "answer_type": answer_type},
+                metadata={"sources": sources, "answer_type": answer_type, "unanswerable": unanswerable},
                 user_id=user_id
             )
         

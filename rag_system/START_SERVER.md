@@ -29,6 +29,8 @@ Get your API key from: https://platform.openai.com/api-keys
 ### Step 4: Start the server
 ```bash
 python -m uvicorn app.main:app --reload
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
+cd f:\samad\chatobot\rag_system; f:\samad\chatobot\rag_system\venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
 ```
 
 Or simply:

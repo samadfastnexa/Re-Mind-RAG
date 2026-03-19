@@ -6,13 +6,22 @@ import { api, auth, User } from '@/lib/api';
 import UserManagement from '@/components/UserManagement';
 import QueryHistory from '@/components/QueryHistory';
 import DocumentManagement from '@/components/DocumentManagement';
+import TicketManagement from '@/components/TicketManagement';
 
-type Tab = 'users' | 'queries' | 'documents';
+type Tab = 'users' | 'queries' | 'documents' | 'tickets';
+
+type QuickStats = {
+  users: number;
+  docs: number;
+  queries: number;
+  openTickets: number;
+};
 
 export default function AdminPage() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('queries');
+  const [quickStats, setQuickStats] = useState<QuickStats | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -22,22 +31,50 @@ export default function AdminPage() {
         return;
       }
 
+      // Instant local decode — no spinner while waiting for network
+      const localUser = auth.getUserFromToken();
+      if (localUser) {
+        if (localUser.role !== 'admin') {
+          router.push('/');
+          return;
+        }
+        setUser(localUser);
+        setLoading(false);
+      }
+
+      // Background refresh for full user details
       try {
         const userData = await api.getCurrentUser();
-        
-        // Check if user is admin
         if (userData.role !== 'admin') {
           router.push('/');
           return;
         }
-        
         setUser(userData);
       } catch (error) {
         console.error('Auth check failed:', error);
-        router.push('/login');
+        if (!localUser) {
+          auth.clearToken();
+          router.push('/login');
+        }
       } finally {
         setLoading(false);
       }
+
+      // Non-critical background stats for header summary
+      try {
+        const [usersRes, docsRes, queryRes, ticketRes] = await Promise.all([
+          api.getAllUsers(),
+          api.listDocuments(),
+          api.getQueryStats(),
+          api.getTicketStats(),
+        ]);
+        setQuickStats({
+          users: usersRes.length,
+          docs: docsRes.length,
+          queries: queryRes.total_queries,
+          openTickets: ticketRes.open_tickets,
+        });
+      } catch (_) { /* stats are cosmetic — ignore errors */ }
     };
 
     checkAuth();
@@ -73,6 +110,30 @@ export default function AdminPage() {
             <p className="text-sm text-gray-600 mt-1">
               Manage users and system settings
             </p>
+            {/* Quick stats — loaded in background, appear as soon as ready */}
+            {quickStats && (
+              <div className="flex items-center gap-4 mt-2">
+                <span className="text-xs text-gray-500">
+                  <span className="font-semibold text-gray-800">{quickStats.users}</span> users
+                </span>
+                <span className="text-gray-300">·</span>
+                <span className="text-xs text-gray-500">
+                  <span className="font-semibold text-gray-800">{quickStats.docs}</span> documents
+                </span>
+                <span className="text-gray-300">·</span>
+                <span className="text-xs text-gray-500">
+                  <span className="font-semibold text-gray-800">{quickStats.queries}</span> queries
+                </span>
+                {quickStats.openTickets > 0 && (
+                  <>
+                    <span className="text-gray-300">·</span>
+                    <span className="text-xs font-semibold text-red-600 animate-pulse">
+                      🔴 {quickStats.openTickets} open {quickStats.openTickets === 1 ? 'ticket' : 'tickets'}
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-4">
             <button
@@ -129,11 +190,27 @@ export default function AdminPage() {
           >
             📄 Documents
           </button>
+          <button
+            onClick={() => setActiveTab('tickets')}
+            className={`px-5 py-2 text-sm font-medium rounded-lg transition-all flex items-center gap-1.5 ${
+              activeTab === 'tickets'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            🎫 Tickets
+            {quickStats && quickStats.openTickets > 0 && (
+              <span className="inline-flex items-center justify-center h-4 min-w-[1rem] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold leading-none">
+                {quickStats.openTickets}
+              </span>
+            )}
+          </button>
         </div>
 
         {activeTab === 'queries' && <QueryHistory />}
         {activeTab === 'users' && <UserManagement />}
         {activeTab === 'documents' && <DocumentManagement />}
+        {activeTab === 'tickets' && <TicketManagement />}
       </div>
     </main>
   );

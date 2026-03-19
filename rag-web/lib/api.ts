@@ -2,8 +2,26 @@
  * API client for RAG backend with authentication
  */
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
 const TOKEN_KEY = 'rag_auth_token';
+
+/**
+ * FastAPI returns validation errors as an array of objects:
+ *   { detail: [{loc: [...], msg: "...", type: "..."}] }
+ * This helper converts either a string or an array of error objects
+ * into a readable message so the user never sees "[object Object]".
+ */
+function extractErrorMessage(error: any, fallback: string): string {
+    const detail = error?.detail;
+    if (!detail) return fallback;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+        return detail
+            .map((e: any) => (typeof e === 'object' ? e.msg ?? JSON.stringify(e) : String(e)))
+            .join('; ');
+    }
+    return String(detail) || fallback;
+}
 
 export interface Document {
     document_id: string;
@@ -38,7 +56,14 @@ export interface QueryResponse {
         content: string;
         relevance_score: number;
         chunk_length: number;
+        // Location metadata (present when extracted)
+        page?: number;
+        page_range?: string;
+        pages?: number[];
+        section_id?: string;
+        has_table?: boolean;
     }>;
+    structured_data?: Array<Record<string, any>>;
     answer_type?: string;
     retrieval_metadata?: {
         total_sources: number;
@@ -46,13 +71,15 @@ export interface QueryResponse {
         reranking_used: boolean;
         filters_applied: boolean;
     };
+    unanswerable?: boolean;
 }
 
 export interface QueryRequest {
     question: string;
     top_k?: number;
     answer_type?: 'default' | 'summary' | 'detailed' | 'bullet_points' | 'compare' | 'explain_simple';
-    filters?: Record<string, string>;
+    filters?: Record<string, any>;
+    return_structured?: boolean;
     session_id?: string;
 }
 
@@ -72,10 +99,22 @@ export interface FeedbackRequest {
 export interface UploadResponse {
     success: boolean;
     message: string;
-    document_id: string;
+    document_id?: string;
     filename: string;
     pages?: number;
-    chunks: number;
+    chunks?: number;
+    upload_id?: string;
+}
+
+export interface UploadProgress {
+    status: 'uploading' | 'processing' | 'vectorizing' | 'completed' | 'failed';
+    progress: number;
+    message: string;
+    document_id?: string;
+    filename?: string;
+    pages?: number;
+    chunks?: number;
+    error?: string;
 }
 
 export interface User {
@@ -87,6 +126,15 @@ export interface User {
     can_delete_history: boolean;
     can_export: boolean;
     created_at: string;
+}
+
+export interface AvailableFilters {
+    control_owner: string[];
+    priority: string[];
+    compliance_tags: string[];
+    applies_to: string[];
+    group: string[];
+    section_id: string[];
 }
 
 export interface LoginResponse {
@@ -119,8 +167,27 @@ export interface QueryStatsResponse {
     unique_users: number;
     avg_rating: number | null;
     rated_queries: number;
+    unanswerable_queries: number;
     queries_by_type: Record<string, number>;
     queries_by_user: Record<string, number>;
+}
+
+export interface TicketResponse {
+    id: string;
+    user_id: string;
+    question: string;
+    session_id: string | null;
+    status: string;
+    created_at: string;
+    resolved_at: string | null;
+    admin_notes: string | null;
+}
+
+export interface TicketStatsResponse {
+    total_tickets: number;
+    open_tickets: number;
+    in_progress_tickets: number;
+    resolved_tickets: number;
 }
 
 export interface AdminSession {
@@ -149,7 +216,40 @@ export const auth = {
     },
 
     isAuthenticated(): boolean {
-        return !!this.getToken();
+        return !!this.getToken() && !this.isTokenExpired();
+    },
+
+    isTokenExpired(): boolean {
+        const token = this.getToken();
+        if (!token) return true;
+        try {
+            const payload = JSON.parse(atob(token.split('.')[1]));
+            // Expire 60 seconds early to avoid edge cases
+            return (payload.exp * 1000) < (Date.now() - 60_000);
+        } catch {
+            return true;
+        }
+    },
+
+    getUserFromToken(): User | null {
+        const token = this.getToken();
+        if (!token) return null;
+        try {
+            const payload = JSON.parse(atob(token.split('.')[1]));
+            if (!payload.sub) return null;
+            return {
+                id: 0,               // placeholder — background /api/auth/me fills the real value
+                username: payload.sub,
+                email: '',
+                role: (payload.role ?? 'user') as 'user' | 'admin',
+                is_active: true,
+                can_delete_history: true,
+                can_export: true,
+                created_at: '',
+            };
+        } catch {
+            return null;
+        }
     }
 };
 
@@ -184,7 +284,7 @@ export const api = {
 
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.detail || 'Login failed');
+            throw new Error(extractErrorMessage(error, 'Login failed'));
         }
 
         const data = await response.json();
@@ -195,6 +295,7 @@ export const api = {
     async getCurrentUser(): Promise<User> {
         const token = auth.getToken();
         if (!token) {
+            auth.clearToken();
             throw new Error('Not authenticated');
         }
 
@@ -203,11 +304,11 @@ export const api = {
         });
 
         if (!response.ok) {
-            if (response.status === 401) {
-                auth.clearToken();
-            }
+            // Clear invalid token
+            auth.clearToken();
+            
             const errorText = await response.text();
-            let detail = 'Failed to get user info';
+            let detail = 'Authentication failed';
             try {
                 const errorJson = JSON.parse(errorText);
                 detail = errorJson.detail || detail;
@@ -222,9 +323,12 @@ export const api = {
         auth.clearToken();
     },
 
-    async uploadDocument(file: File): Promise<UploadResponse> {
+    async uploadDocument(file: File, processingMode?: string): Promise<UploadResponse> {
         const formData = new FormData();
         formData.append('file', file);
+        if (processingMode) {
+            formData.append('processing_mode', processingMode);
+        }
 
         const token = auth.getToken();
         const headers: HeadersInit = {};
@@ -240,7 +344,26 @@ export const api = {
 
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.detail || 'Upload failed');
+            console.error('Upload error:', error);
+            // Handle FastAPI validation errors which return an array
+            if (Array.isArray(error.detail)) {
+                const messages = error.detail.map((e: any) => e.msg || JSON.stringify(e)).join(', ');
+                throw new Error(messages);
+            }
+            throw new Error(extractErrorMessage(error, 'Upload failed'));
+        }
+
+        return response.json();
+    },
+
+    async getUploadProgress(uploadId: string): Promise<UploadProgress> {
+        const response = await fetch(`${API_BASE_URL}/upload/progress/${uploadId}`, {
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(extractErrorMessage(error, 'Failed to get upload progress'));
         }
 
         return response.json();
@@ -255,6 +378,7 @@ export const api = {
                 top_k: queryRequest.top_k || 6,
                 answer_type: queryRequest.answer_type || 'default',
                 filters: queryRequest.filters,
+                return_structured: queryRequest.return_structured,
                 session_id: queryRequest.session_id
             };
 
@@ -266,7 +390,7 @@ export const api = {
 
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.detail || 'Query failed');
+            throw new Error(extractErrorMessage(error, 'Query failed'));
         }
 
         return response.json();
@@ -283,6 +407,17 @@ export const api = {
 
         return response.json();
     },
+    async getAvailableFilters(): Promise<AvailableFilters> {
+        const response = await fetch(`${API_BASE_URL}/filters`, {
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to fetch available filters');
+        }
+
+        return response.json();
+    },
 
     async getDocumentChunks(documentId: string): Promise<DocumentChunk[]> {
         const response = await fetch(`${API_BASE_URL}/documents/${documentId}/chunks`, {
@@ -291,7 +426,7 @@ export const api = {
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'Failed to fetch document chunks' }));
-            throw new Error(error.detail || 'Failed to fetch document chunks');
+            throw new Error(extractErrorMessage(error, 'Failed to fetch document chunks'));
         }
 
         return response.json();
@@ -311,8 +446,33 @@ export const api = {
 
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.detail || 'Delete failed');
+            throw new Error(extractErrorMessage(error, 'Delete failed'));
         }
+    },
+
+    async updateDocument(documentId: string, file: File, processingMode: string = 'auto'): Promise<{ upload_id: string; filename: string; document_id: string; message: string }> {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('processing_mode', processingMode);
+
+        const token = auth.getToken();
+        const headers: HeadersInit = {};
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
+        const response = await fetch(`${API_BASE_URL}/documents/${documentId}?processing_mode=${processingMode}`, {
+            method: 'PUT',
+            headers,
+            body: formData,
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(extractErrorMessage(error, 'Update failed'));
+        }
+
+        return response.json();
     },
 
     async getStats() {
@@ -362,7 +522,7 @@ export const api = {
 
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.detail || 'Failed to create user');
+            throw new Error(extractErrorMessage(error, 'Failed to create user'));
         }
 
         return response.json();
@@ -398,7 +558,7 @@ export const api = {
 
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.detail || 'Failed to update user');
+            throw new Error(extractErrorMessage(error, 'Failed to update user'));
         }
 
         return response.json();
@@ -412,7 +572,7 @@ export const api = {
 
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.detail || 'Failed to delete user');
+            throw new Error(extractErrorMessage(error, 'Failed to delete user'));
         }
     },
 
@@ -450,7 +610,8 @@ export const api = {
         });
 
         if (!response.ok) {
-            throw new Error('Failed to clear conversation session');
+            const error = await response.text();
+            throw new Error(error || 'Failed to clear conversation session');
         }
     },
 
@@ -506,6 +667,65 @@ export const api = {
         if (!response.ok) {
             const error = await response.text();
             throw new Error(error || 'Failed to fetch sessions');
+        }
+
+        return response.json();
+    },
+
+    async createTicket(question: string, sessionId?: string): Promise<TicketResponse> {
+        const response = await fetch(`${API_BASE_URL}/api/tickets`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ question, session_id: sessionId }),
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error || 'Failed to create ticket');
+        }
+
+        return response.json();
+    },
+
+    async getTickets(status?: string, limit = 100, offset = 0): Promise<{ tickets: TicketResponse[]; total: number }> {
+        const params = new URLSearchParams();
+        if (status) params.set('status', status);
+        params.set('limit', String(limit));
+        params.set('offset', String(offset));
+
+        const response = await fetch(`${API_BASE_URL}/api/admin/tickets?${params}`, {
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error || 'Failed to fetch tickets');
+        }
+
+        return response.json();
+    },
+
+    async updateTicket(ticketId: string, status: string, adminNotes?: string): Promise<void> {
+        const response = await fetch(`${API_BASE_URL}/api/admin/tickets/${ticketId}`, {
+            method: 'PUT',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ status, admin_notes: adminNotes }),
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error || 'Failed to update ticket');
+        }
+    },
+
+    async getTicketStats(): Promise<TicketStatsResponse> {
+        const response = await fetch(`${API_BASE_URL}/api/admin/ticket-stats`, {
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error || 'Failed to fetch ticket stats');
         }
 
         return response.json();

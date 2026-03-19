@@ -17,10 +17,11 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-3.5-turbo"
     openai_embedding_model: str = "text-embedding-3-small"
     
-    # Ollama Configuration
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "gpt-oss:20b"  # Main LLM model
-    ollama_embedding_model: str = "gemma3:1b"  # For embeddings
+    # Ollama Configuration (all values from .env - no hardcoded defaults)
+    ollama_base_url: str = ""  # Set via OLLAMA_BASE_URL in .env
+    ollama_model: str = ""  # Set via OLLAMA_MODEL in .env
+    ollama_embedding_base_url: Optional[str] = None  # Set via OLLAMA_EMBEDDING_BASE_URL in .env (defaults to ollama_base_url)
+    ollama_embedding_model: str = ""  # Set via OLLAMA_EMBEDDING_MODEL in .env
     
     # ChromaDB Configuration
     chroma_db_path: str = "./data/chroma_db"
@@ -36,26 +37,37 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000,exp://,*"
     
     # Chunking Configuration
-    chunk_size: int = 600  # Smaller chunks for better granularity
-    chunk_overlap: int = 150  # More overlap for context preservation
+    chunk_size: int = 1200  # Balanced size — enough context for SOP procedures
+    chunk_overlap: int = 200  # Overlap to preserve cross-chunk context
     
     # RAG Quality Settings
     retrieval_top_k: int = 8  # More context for better answers
     llm_temperature: float = 0.3  # Lower for more focused responses
     
+    # Advanced Processing Settings
+    use_advanced_processing: bool = True  # Enable table/image extraction
+    use_sop_processing: bool = True  # Auto-detect and use procedure-based chunking for SOPs
+    
     # Hybrid Search Configuration
     enable_hybrid_search: bool = True  # Combine vector + BM25 keyword search
     bm25_weight: float = 0.4  # 40% BM25, 60% vector - more keyword matching
-    hybrid_top_k: int = 30  # Retrieve more candidates before reranking
-    
+    hybrid_top_k: int = 50  # Retrieve more candidates before reranking
+
     # Reranking Configuration
     enable_reranking: bool = True  # Use reranker model to refine results
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"  # Fast & accurate
-    reranker_top_k: int = 8  # Final number after reranking (matches retrieval_top_k)
+    reranker_top_k: int = 15  # Final number after reranking (enough context for the LLM)
     
     # Enhanced Chunking Configuration
     use_semantic_chunking: bool = True  # Split by semantic meaning
     enable_sliding_window: bool = True  # Add overlapping context
+    
+    # Advanced Document Processing
+    use_advanced_processing: bool = True  # Use advanced processor with table/image extraction
+    extract_tables: bool = True  # Extract and preserve tables
+    extract_images: bool = True  # Extract images from documents
+    save_extracted_images: bool = True  # Save images to disk
+    table_format: str = "structured"  # "markdown" or "structured" - structured is cleaner for complex tables
     
     # Conversation History
     enable_conversation_history: bool = True

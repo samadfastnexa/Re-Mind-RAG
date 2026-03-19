@@ -9,6 +9,8 @@ Re-Mind RAG is a complete document intelligence platform that allows users to:
 - 🤖 Ask questions and get AI-powered answers with source citations
 - 🔐 Secure user authentication and authorization
 - 💻 Access via web browser or mobile app
+- 🆓 Use FREE local AI models (Ollama) or paid OpenAI API
+- 🌐 Connect to local or remote Ollama servers for distributed AI
 - 🚀 Production-ready with FastAPI backend and modern frontends
 
 ## 🏗️ Project Structure
@@ -38,7 +40,9 @@ chatobot/
 
 - **Python 3.10+** (for backend)
 - **Node.js 18+** (for web and mobile)
-- **OpenAI API Key** ([Get here](https://platform.openai.com/api-keys))
+- **Choose ONE LLM Provider:**
+  - **Ollama** (FREE - Local/Remote AI models) - [Download](https://ollama.ai) OR use remote server
+  - **OpenAI API Key** (Paid - Cloud API) - [Get here](https://platform.openai.com/api-keys)
 
 ### 1️⃣ Backend Setup (FastAPI)
 
@@ -56,11 +60,14 @@ pip install -r requirements.txt
 
 # Configure environment
 cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
+# Edit .env and configure your LLM provider:
+#   - For Ollama (FREE): Set LLM_PROVIDER=ollama and OLLAMA_BASE_URL
+#   - For OpenAI (Paid): Set LLM_PROVIDER=openai and OPENAI_API_KEY
 
 # Start the server
 uvicorn app.main:app --reload
-# Server runs at http://localhost:8000
+# Server runs at http://localhost:8001
+# Port is configurable in .env file (default: 8001)
 ```
 
 ### 2️⃣ Web Frontend Setup (Next.js)
@@ -97,7 +104,8 @@ npm start
 - ✅ **Authentication & Authorization** - JWT-based user management
 - ✅ **Document Processing** - PDF and text file support (up to 100 pages)
 - ✅ **Vector Search** - ChromaDB for fast similarity search
-- ✅ **AI-Powered Q&A** - OpenAI GPT-3.5-turbo integration
+- ✅ **AI-Powered Q&A** - OpenAI GPT or Ollama (Local/Remote models)
+- ✅ **Flexible LLM Provider** - Switch between OpenAI (paid) and Ollama (free)
 - ✅ **Source Citations** - Answers include document references
 - ✅ **REST API** - FastAPI with Swagger documentation
 - ✅ **Document Management** - Upload, list, and delete documents
@@ -121,8 +129,10 @@ npm start
 
 Once the backend is running, access interactive API docs:
 
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+- **Swagger UI**: http://localhost:8001/docs
+- **ReDoc**: http://localhost:8001/redoc
+
+**Note:** If you changed the PORT in `.env`, use your configured port instead of 8001.
 
 ### Key Endpoints
 
@@ -142,7 +152,8 @@ Once the backend is running, access interactive API docs:
 - **FastAPI** - High-performance Python web framework
 - **ChromaDB** - Vector database for embeddings
 - **LangChain** - RAG orchestration
-- **OpenAI** - GPT-3.5-turbo & embeddings
+- **OpenAI** - GPT-3.5-turbo & embeddings (optional)
+- **Ollama** - Local/Remote open-source LLM support (llama3.1, qwen3, gemma3)
 - **PyPDF2** - PDF text extraction
 - **Python-JOSE** - JWT authentication
 
@@ -160,10 +171,61 @@ Once the backend is running, access interactive API docs:
 ## 🔐 Environment Configuration
 
 ### Backend (.env)
+
+#### Option 1: Ollama (FREE - Recommended)
+
+**Local Ollama Server:**
 ```env
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.1:latest
+
+HOST=0.0.0.0
+PORT=8001  # Change if port is already in use
+SECRET_KEY=your-secret-key-for-jwt
+CHROMA_DB_PATH=./data/chroma_db
+UPLOAD_DIR=./data/documents
+```
+
+**Remote Ollama Server:**
+```env
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://192.168.18.147:11434  # Your Ollama server IP
+OLLAMA_MODEL=llama3.1:latest
+
+HOST=0.0.0.0
+PORT=8001  # Change if port is already in use
+SECRET_KEY=your-secret-key-for-jwt
+CHROMA_DB_PATH=./data/chroma_db
+UPLOAD_DIR=./data/documents
+```
+
+**Setup Ollama:**
+```powershell
+# 1. Download and install Ollama from https://ollama.ai
+
+# 2. Pull a model (choose one):
+ollama pull llama3.1:latest  # 4.9 GB - Best quality
+ollama pull llama3:8b         # 4.7 GB - Fast and capable
+ollama pull qwen3:8b          # 5.2 GB - Alternative
+ollama pull gemma3:1b         # 815 MB - Lightweight
+
+# 3. List installed models:
+ollama list
+
+# 4. Start Ollama server (usually auto-starts):
+ollama serve
+```
+
+#### Option 2: OpenAI (Paid - Cloud API)
+```env
+LLM_PROVIDER=openai
 OPENAI_API_KEY=sk-your-key-here
 OPENAI_MODEL=gpt-3.5-turbo
-EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+
+HOST=0.0.0.0
+PORT=8001  # Change if port is already in use
 SECRET_KEY=your-secret-key-for-jwt
 CHROMA_DB_PATH=./data/chroma_db
 UPLOAD_DIR=./data/documents
@@ -171,13 +233,13 @@ UPLOAD_DIR=./data/documents
 
 ### Web Frontend (.env.local)
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_URL=http://localhost:8001  # Match backend PORT
 ```
 
 ### Mobile App
 Edit `services/api.ts` to configure the backend URL:
 ```typescript
-const API_URL = 'http://your-backend-ip:8000';
+const API_URL = 'http://your-backend-ip:8001';  # Match backend PORT
 ```
 
 ## 📖 Detailed Documentation
@@ -210,8 +272,32 @@ For component-specific documentation, see:
 
 ### Backend Issues
 
-**"OpenAI API key not configured"**
-- Ensure `.env` file exists in `rag_system/` with valid API key
+**"OpenAI API key not configured" or "Ollama connection error"**
+- Ensure `.env` file exists in `rag_system/` 
+- For Ollama: Check `OLLAMA_BASE_URL` is correct and Ollama is running
+  ```powershell
+  # Test Ollama connection
+  curl http://localhost:11434/api/tags
+  
+  # Or for remote server
+  curl http://192.168.18.147:11434/api/tags
+  ```
+- For OpenAI: Verify your API key is valid
+
+**"Model not found" (Ollama)**
+- List available models: `ollama list`
+- Pull the model: `ollama pull llama3.1:latest`
+- Update `OLLAMA_MODEL` in `.env` to match an installed model
+
+**"Cannot connect to remote Ollama server"**
+- Ensure remote machine's firewall allows port 11434
+- Verify Ollama is bound to 0.0.0.0:
+  ```powershell
+  # On remote machine, set environment variable:
+  $env:OLLAMA_HOST = "0.0.0.0"
+  ollama serve
+  ```
+- Check both machines are on the same network
 
 **"Module not found" errors**
 - Activate virtual environment: `.\venv\Scripts\activate`
@@ -220,8 +306,9 @@ For component-specific documentation, see:
 ### Web Issues
 
 **"Cannot connect to API"**
-- Ensure backend is running at `http://localhost:8000`
-- Check `NEXT_PUBLIC_API_URL` in `.env.local`
+- Ensure backend is running at `http://localhost:8001` (or your configured PORT)
+- Check `NEXT_PUBLIC_API_URL` in `.env.local` matches backend PORT
+- Verify PORT setting in backend `.env` file
 
 ### Mobile Issues
 
@@ -284,3 +371,6 @@ For issues or questions:
 ---
 
 **Built with ❤️ using FastAPI, Next.js, React Native, ChromaDB, and OpenAI**
+
+#(.venv) PS F:\samad\chatobot\rag-web> npm run dev    
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
