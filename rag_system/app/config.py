@@ -20,7 +20,17 @@ class Settings(BaseSettings):
     # Ollama Configuration
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "gpt-oss:20b"  # Main LLM model
+    ollama_embedding_base_url: str = "http://localhost:11434"  # Embedding server URL
     ollama_embedding_model: str = "gemma3:1b"  # For embeddings
+    local_fallback_embedding_model: str = "all-MiniLM-L6-v2"
+    local_fallback_embedding_device: str = "cpu"
+    local_fallback_normalize_embeddings: bool = True
+
+    # Advanced Document Processing
+    use_advanced_processing: bool = True
+    extract_tables: bool = True
+    extract_images: bool = True
+    save_extracted_images: bool = True
     
     # ChromaDB Configuration
     chroma_db_path: str = "./data/chroma_db"
@@ -60,6 +70,18 @@ class Settings(BaseSettings):
     # Conversation History
     enable_conversation_history: bool = True
     max_history_messages: int = 10  # Keep last 10 messages per session
+
+    # Policy support behavior
+    ask_ticket_on_policy_miss: bool = True
+    policy_ticket_prompt: str = "I cannot find the requested policy in the indexed documents. Please share your existing ticket ID, or create an IT support ticket so the policy team can assist."
+
+    # Source quality settings
+    source_preview_max_chars: int = 280
+    source_dedupe_prefix_chars: int = 140
+    source_min_relevance_score: float = 0.0
+    source_max_results: int = 8
+    source_max_per_document: int = 3
+    source_min_content_chars: int = 40
     
     # JWT Authentication Settings
     jwt_secret_key: str = "your-secret-key-change-this-in-production-use-openssl-rand-hex-32"

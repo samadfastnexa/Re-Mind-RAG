@@ -38,11 +38,10 @@ class DocumentProcessor:
                         model=settings.openai_embedding_model
                     )
                 else:
-                    from langchain_community.embeddings import HuggingFaceEmbeddings
-                    embeddings = HuggingFaceEmbeddings(
-                        model_name="all-MiniLM-L6-v2",
-                        model_kwargs={'device': 'cpu'},
-                        encode_kwargs={'normalize_embeddings': True}
+                    from langchain_ollama import OllamaEmbeddings
+                    embeddings = OllamaEmbeddings(
+                        base_url=settings.ollama_embedding_base_url,
+                        model=settings.ollama_embedding_model
                     )
                 
                 self._semantic_splitter = SemanticChunker(
