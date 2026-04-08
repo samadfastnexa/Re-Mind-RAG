@@ -28,13 +28,21 @@ class VectorStore:
                 openai_api_key=settings.openai_api_key,
                 model=settings.openai_embedding_model
             )
-        else:  # ollama - use local HuggingFace embeddings
-            from langchain_community.embeddings import HuggingFaceEmbeddings
-            self.embeddings = HuggingFaceEmbeddings(
-                model_name="all-MiniLM-L6-v2",  # Fast, small, and accurate
-                model_kwargs={'device': 'cpu'},
-                encode_kwargs={'normalize_embeddings': True}
-            )
+        else:  # ollama - use configured Ollama embedding model
+            try:
+                from langchain_ollama import OllamaEmbeddings
+                self.embeddings = OllamaEmbeddings(
+                    base_url=settings.ollama_embedding_base_url,
+                    model=settings.ollama_embedding_model
+                )
+            except Exception as e:
+                print(f"Warning: Falling back to local HuggingFace embeddings: {e}")
+                from langchain_community.embeddings import HuggingFaceEmbeddings
+                self.embeddings = HuggingFaceEmbeddings(
+                    model_name=settings.local_fallback_embedding_model,
+                    model_kwargs={'device': settings.local_fallback_embedding_device},
+                    encode_kwargs={'normalize_embeddings': settings.local_fallback_normalize_embeddings}
+                )
         
         # Get or create collection
         self.collection = self.client.get_or_create_collection(

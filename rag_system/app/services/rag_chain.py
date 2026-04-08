@@ -15,6 +15,17 @@ from app.services.query_cache import query_cache
 
 class RAGChain:
     """RAG chain for question answering over documents with advanced features."""
+
+    POLICY_KEYWORDS = (
+        "policy",
+        "policies",
+        "email policy",
+        "it policy",
+        "security policy",
+        "compliance",
+        "guideline",
+        "procedure"
+    )
     
     def __init__(self):
         # Initialize LLM based on provider
@@ -30,11 +41,11 @@ class RAGChain:
             self.llm = ChatOllama(
                 base_url=settings.ollama_base_url,
                 model=settings.ollama_model,
-                temperature=0.15,  # Very low for maximum accuracy
+                temperature=0.3,  # Slightly higher to encourage answering
                 num_predict=1024,  # Longer, more complete responses
-                top_k=15,  # Balanced selection
-                top_p=0.9,  # Good diversity while staying focused
-                repeat_penalty=1.15  # Reduce repetitive text
+                top_k=20,  # More diverse token selection
+                top_p=0.92,  # Good diversity while staying focused
+                repeat_penalty=1.1  # Reduce repetitive text
             )
         
         # Initialize reranker if enabled
@@ -53,32 +64,109 @@ class RAGChain:
     def _create_default_prompt(self) -> ChatPromptTemplate:
         """Standard Q&A prompt."""
         return ChatPromptTemplate.from_messages([
-            ("system", """You are a precise, knowledgeable AI assistant. Answer questions using ONLY the provided context.
+            ("system", """You are a helpful AI assistant. Answer questions based on the provided context documents.
 
-RULES:
-1. Answer ONLY from the context — no external knowledge or assumptions
-2. If the answer IS in the context, give a clear, complete, well-structured response
-3. If the answer is NOT in the context, say: "I cannot answer this question based on the provided documents."
-4. Interpret the user's intent even if there are typos or unclear phrasing
-5. Be thorough — include all relevant details from the context
-6. Never contradict the source material
+INSTRUCTIONS:
+1. Read the context carefully and extract relevant information
+2. If the context contains information related to the question, provide a clear, complete answer
+3. Synthesize information from multiple sources if needed
+4. ONLY say you cannot answer if the context is completely unrelated to the question
+5. Be thorough and include all relevant details
+6. Add citations using [Source N] after each fact
 
 FORMATTING:
-- **Bold** key terms and important concepts
-- Use bullet points or numbered lists for multiple items/steps
-- Use ### headings for longer answers with multiple topics
-- Use `code formatting` for file names, commands, technical terms
-- Use > blockquotes for direct quotes from documents
-- Keep short answers concise; expand only when the context is rich
+- **Bold** key terms and important concepts  
+- Use bullet points or numbered lists for clarity
+- Use ### headings for longer answers
+- Use `code formatting` for technical terms, emails, file names
+- Use > blockquotes for direct quotes
 
 {conversation_context}
 
 CONTEXT FROM DOCUMENTS:
 {context}
 
-Answer the question below accurately and completely using ONLY the context above."""),
+Answer the question using the context above:"""),
             ("human", "{question}")
         ])
+
+    def _compute_relevance_score(self, result: Dict) -> float:
+        """Compute a normalized relevance score in the range [0, 1]."""
+        score = 0.0
+        if result.get('reranker_score') is not None:
+            score = float(result['reranker_score'])
+        elif result.get('hybrid_score') is not None:
+            score = float(result['hybrid_score'])
+        elif result.get('distance') is not None:
+            score = 1 - float(result.get('distance', 0))
+
+        if score < 0:
+            return 0.0
+        if score > 1:
+            return 1.0
+        return score
+
+    def _prepare_sources(self, search_results: List[Dict]) -> List[Dict]:
+        """Prepare high-quality sources with deduplication, relevance filtering, and diversity controls."""
+        candidates = []
+        seen_content = set()
+
+        for result in search_results:
+            metadata = result.get('metadata', {})
+            content = result.get('content', '')
+
+            content = content.replace('--- Page', '').strip()
+            content = ' '.join(content.split())
+            if len(content) < settings.source_min_content_chars:
+                continue
+
+            content_key = content[:settings.source_dedupe_prefix_chars].lower()
+            if content_key in seen_content:
+                continue
+            seen_content.add(content_key)
+
+            relevance_score = self._compute_relevance_score(result)
+            if relevance_score < settings.source_min_relevance_score:
+                continue
+
+            chunk_index = metadata.get('chunk_index', 0)
+            candidates.append({
+                "document_id": metadata.get('document_id', 'unknown'),
+                "document": metadata.get('filename', 'Unknown'),
+                "chunk": chunk_index + 1,
+                "total_chunks": metadata.get('total_chunks', 1),
+                "position_percent": metadata.get('position_percent', 0),
+                "chunk_length": len(content),
+                "relevance_score": round(relevance_score, 4),
+                "content": content
+            })
+
+        # Keep highest confidence candidates first.
+        candidates.sort(key=lambda x: x['relevance_score'], reverse=True)
+
+        # Enforce document diversity with per-document cap.
+        selected = []
+        per_doc_count = {}
+        for candidate in candidates:
+            doc_id = candidate['document_id']
+            current = per_doc_count.get(doc_id, 0)
+            if current >= settings.source_max_per_document:
+                continue
+
+            per_doc_count[doc_id] = current + 1
+            selected.append(candidate)
+            if len(selected) >= settings.source_max_results:
+                break
+
+        for idx, item in enumerate(selected, 1):
+            item['source_id'] = idx
+
+        return selected
+
+    def _is_policy_question(self, question: str) -> bool:
+        """Detect policy-like questions for ticket-routing fallback."""
+        q = (question or "").lower()
+        return any(keyword in q for keyword in self.POLICY_KEYWORDS)
     
     def _create_summary_prompt(self) -> ChatPromptTemplate:
         """Summarization prompt."""
@@ -221,105 +309,55 @@ CONTEXT:
             ("human", "Explain in simple terms: {question}")
         ])
     
-    def format_context(self, search_results: List[Dict]) -> str:
+    def format_context(self, prepared_sources: List[Dict]) -> str:
         """
-        Format search results into context string with enhanced source information.
+        Format prepared sources into context string with stable source numbering.
         Cleans and deduplicates content.
         
         Args:
-            search_results: List of search results from vector store
+            prepared_sources: List of processed sources
             
         Returns:
             Formatted context string
         """
         context_parts = []
-        seen_content = set()
-        
-        for i, result in enumerate(search_results, 1):
-            metadata = result.get('metadata', {})
-            content = result.get('content', '')
-            
-            # Clean content - remove page markers and normalize whitespace
-            content = content.replace('--- Page', '').strip()
-            content = ' '.join(content.split())
-            
-            # Skip duplicate content
-            content_key = content[:150].lower()
-            if content_key in seen_content:
-                continue
-            seen_content.add(content_key)
-            
-            filename = metadata.get('filename', 'Unknown')
-            chunk_index = metadata.get('chunk_index', 0)
-            position = metadata.get('position_percent', 0)
-            
-            # Include score information for transparency
-            score_info = ""
-            if result.get('reranker_score'):
-                score_info = f" [Relevance: {result['reranker_score']:.2f}]"
-            elif result.get('hybrid_score'):
-                score_info = f" [Hybrid Score: {result['hybrid_score']:.2f}]"
-            
+
+        for source in prepared_sources:
+            score_info = f" [Relevance: {source['relevance_score']:.2f}]"
             context_parts.append(
-                f"[Source {len(context_parts) + 1}: {filename}, Section {chunk_index + 1} ({position:.0f}% through document){score_info}]\n{content}\n"
+                f"[Source {source['source_id']}: {source['document']}, Section {source['chunk']} ({source['position_percent']:.0f}% through document){score_info}]\n{source['content']}\n"
             )
         
         return "\n---\n".join(context_parts)
     
-    def format_sources(self, search_results: List[Dict]) -> List[Dict]:
+    def format_sources(self, prepared_sources: List[Dict]) -> List[Dict]:
         """
-        Format sources for response with enhanced metadata.
-        Filters out duplicate/similar chunks and cleans content.
+        Format prepared sources for API response.
         
         Args:
-            search_results: List of search results
+            prepared_sources: List of processed sources
             
         Returns:
             List of formatted source information
         """
         sources = []
-        seen_content = set()
-        
-        for i, result in enumerate(search_results):
-            metadata = result.get('metadata', {})
-            content = result.get('content', '')
-            
-            # Clean content - remove page markers and excessive whitespace
-            content = content.replace('--- Page', '').strip()
-            content = ' '.join(content.split())
-            
-            # Skip if this is too similar to already seen content (simple deduplication)
-            content_key = content[:100].lower()  # First 100 chars as key
-            if content_key in seen_content:
-                continue
-            seen_content.add(content_key)
-            
-            # Calculate relevance score (use reranker if available, else hybrid, else distance)
-            relevance_score = 0.0
-            if result.get('reranker_score'):
-                relevance_score = float(result['reranker_score'])
-            elif result.get('hybrid_score'):
-                relevance_score = float(result['hybrid_score'])
-            else:
-                relevance_score = 1 - result.get('distance', 0)
-            
-            # Create meaningful content preview
-            content_preview = content
-            if len(content_preview) > 300:
-                content_preview = content_preview[:300] + "..."
-            
+        for source in prepared_sources:
+            content_preview = source['content']
+            if len(content_preview) > settings.source_preview_max_chars:
+                content_preview = content_preview[:settings.source_preview_max_chars].rstrip() + "..."
+
             sources.append({
-                "source_id": len(sources) + 1,  # Renumber after deduplication
-                "document_id": metadata.get('document_id', 'unknown'),
-                "document": metadata.get('filename', 'Unknown'),
-                "chunk": metadata.get('chunk_index', 0) + 1,
-                "total_chunks": metadata.get('total_chunks', 1),
-                "position_percent": metadata.get('position_percent', 0),
+                "source_id": source['source_id'],
+                "document_id": source['document_id'],
+                "document": source['document'],
+                "chunk": source['chunk'],
+                "total_chunks": source['total_chunks'],
+                "position_percent": source['position_percent'],
                 "content": content_preview,
-                "relevance_score": round(relevance_score, 4),
-                "chunk_length": len(content)
+                "relevance_score": source['relevance_score'],
+                "chunk_length": source['chunk_length']
             })
-        
+
         return sources
     
     def query(
@@ -378,9 +416,13 @@ CONTEXT:
         )
         
         if not search_results:
+            fallback_answer = "I don't have any documents to answer this question. Please upload some documents first."
+            if settings.ask_ticket_on_policy_miss and self._is_policy_question(question):
+                fallback_answer = settings.policy_ticket_prompt
+
             no_docs_response = {
                 "question": question,
-                "answer": "I don't have any documents to answer this question. Please upload some documents first.",
+                "answer": fallback_answer,
                 "sources": [],
                 "answer_type": answer_type
             }
@@ -398,8 +440,25 @@ CONTEXT:
         else:
             search_results = search_results[:top_k]
         
+        prepared_sources = self._prepare_sources(search_results)
+        if not prepared_sources:
+            low_quality_response = {
+                "question": question,
+                "answer": "I found documents, but no high-confidence sources matched this question. Please refine your question or upload more relevant documents.",
+                "sources": [],
+                "answer_type": answer_type,
+                "retrieval_metadata": {
+                    "total_sources": 0,
+                    "hybrid_search_used": settings.enable_hybrid_search,
+                    "reranking_used": settings.enable_reranking,
+                    "filters_applied": filters is not None,
+                    "cache_hit": False
+                }
+            }
+            return low_quality_response
+
         # Format context
-        context = self.format_context(search_results)
+        context = self.format_context(prepared_sources)
         
         # Select prompt template based on answer type
         prompt_template = self.answer_type_prompts.get(answer_type, self.answer_type_prompts["default"])
@@ -420,7 +479,7 @@ CONTEXT:
         answer = chain.invoke(question)
         
         # Format sources with enhanced metadata
-        sources = self.format_sources(search_results)
+        sources = self.format_sources(prepared_sources)
         
         retrieval_metadata = {
             "total_sources": len(sources),
